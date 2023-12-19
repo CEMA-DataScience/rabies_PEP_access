@@ -1,0 +1,1601 @@
+---
+title: "Makueni_PEP_Accessibility"
+author: "The Center for Epidemiological Modelling and Analysis - University of Nairobi"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+## 1. Set up
+
+```{r}
+
+pacman::p_load(
+  dplyr,
+  terra,
+  sf,
+  rgdal,
+  doParallel,
+  foreach,
+  snow,
+  raster,
+  osmextract,
+  tidyverse,
+  gdalUtils,
+  readxl,
+  gdistance,
+  iterators,
+  data.table,
+  rmapshaper,
+  fasterize,
+  here,
+  cowplot,
+  ggspatial,
+  exactextractr,
+  sp,
+  abind,
+  rje,
+  malariaAtlas,
+  classInt,
+  ggpubr,
+  janitor,
+  gmapsdistance,
+  httr,
+  geosphere
+  )
+
+```
+
+Read data
+```{r}
+
+all_fac <- read_csv("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/raw/data/processed/health_facilities/Geocodes_AllHealthFacilitiesInKenya.csv")%>%
+  filter(!latitude %in% NA)%>%
+  filter(!longitude %in% NA)%>%
+  filter(county %in% "Makueni") #selecting only Makueni county
+
+all_fac_sf <- all_fac %>% 
+  st_as_sf(coords = c("longitude", "latitude"),crs=4326)
+  
+all_fac_sf_t <- st_transform(all_fac_sf, crs=4326)
+
+adm0 <- st_read(here("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/gadm41_KEN_shp/makueni_county.shp"))
+
+adm1 <- st_read(here("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/gadm41_KEN_shp/makueni_subcounties.shp"))
+
+pop <- raster("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/raw/data/processed/worldpop/constrained/makueni_constrained_pop.tif")
+
+mkn.shp <- malariaAtlas::getShp(ISO = "KEN", admin_level = "admin1")
+
+analysis.shp <- mkn.shp[mkn.shp@data$name_1=="Makueni",]
+analysis.shp1 <- mkn.shp[mkn.shp@data$name_1=="Makueni",]
+
+plot(analysis.shp, main="Shape for Clipping")
+plot(analysis.shp1, main = "Shape for Clipping")
+
+friction <- malariaAtlas::getRaster(
+                      surface = "Global friction surface enumerating land-based travel speed with access to motorized transport for a nominal year 2019",
+                      shp = analysis.shp)
+
+own_friction <- malariaAtlas::getRaster(
+                      surface = "Global friction surface enumerating land-based travel walking-only speed without access to motorized transport for a nominal year 2019",
+                      shp = analysis.shp1)
+
+# using the friction layer we created
+
+malariaAtlas::autoplot_MAPraster(friction)
+malariaAtlas::autoplot_MAPraster(own_friction)
+
+## Convert friction surface to a transition matrix
+T1 <- gdistance::transition(friction, function(x) 1/mean(x), 8) 
+T.GC <- gdistance::geoCorrection(T1) 
+
+T2 <- gdistance::transition(own_friction, function(x) 1/mean(x), 8) 
+T.GC1 <- gdistance::geoCorrection(T2) 
+
+makueni_shp <- st_read("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/Makueni/processed data/shapefile/makueni_county.shp")
+
+```
+
+
+All facilities
+```{r}
+## Point locations
+all_facilities <- all_fac %>% 
+  dplyr::select(longitude, latitude, facility_type_name,owner_type_name,keph_level_name, county)
+  
+names(all_facilities) <- c("X_COORD", "Y_COORD", "name", "owner_type_name")
+
+# Keep only point coordinates within the shapefile bounds
+coordinates(all_facilities) <- ~ X_COORD + Y_COORD 
+
+crs(all_facilities) <- crs(analysis.shp)
+
+overlap <- over(all_facilities, analysis.shp)
+
+all_facilities <- all_facilities[!is.na(overlap$iso),]
+
+points <- as.matrix(all_facilities@coords)
+
+all_facilities_access_raster <- gdistance::accCost(T.GC, points)
+all_facilities_access_raster1 <- gdistance::accCost(T.GC1, points)
+
+p <- malariaAtlas::autoplot_MAPraster(all_facilities_access_raster, 
+                        shp_df=analysis.shp, printed=F)
+
+p1 <- malariaAtlas::autoplot_MAPraster(all_facilities_access_raster1, 
+                        shp_df=analysis.shp, printed=F)
+
+full_plot <- p[[1]] + 
+  geom_point(data=data.frame(all_facilities@coords), 
+                           aes(x=X_COORD, y=Y_COORD)) +
+  scale_fill_gradientn(colors = rev(rje::cubeHelix(gamma=1.0, 
+                                                 start=1.5, 
+                                                 r=-1.0, 
+                                                 hue=1.5, 
+                                                 n=16)), 
+                     name="Minutes \n of Travel") + 
+   ggtitle("Travel Time to all the health facilities") +
+  theme(axis.text=element_blank(),
+  panel.border=element_rect(fill=NA, color="white"))
+
+full_plot1 <- p1[[1]] + 
+  geom_point(data=data.frame(all_facilities@coords), 
+                           aes(x=X_COORD, y=Y_COORD)) +
+  scale_fill_gradientn(colors = rev(rje::cubeHelix(gamma=1.0, 
+                                                 start=1.5, 
+                                                 r=-1.0, 
+                                                 hue=1.5, 
+                                                 n=16)), 
+                     name="Minutes \n of Travel") + 
+   ggtitle("Travel Time to all the health facilities") +
+  theme(axis.text=element_blank(),
+  panel.border=element_rect(fill=NA, color="white"))
+
+print(full_plot)
+print(full_plot1)
+
+```
+
+PEP facilities
+
+```{r}
+## Point locations
+pep_facilities <- all_fac %>% 
+  dplyr::select(longitude, latitude, facility_type_name,owner_type_name,keph_level_name, county, official_name)%>%
+  filter(official_name %in% c("Kibwezi Sub County Hospital", "Kilungu Sub County Hospital", "Kisau Sub County Hospital", "Makindu Sub County Hospital", "Makueni County Referral Hospital", "Matiliku Sub County Hospital", "Mbooni Sub County Hospital", "Mtito Andei Sub County Hospital", "Mukuyuni Sub County Hospital", "Sultan Hamud Sub County Hospital", "Kambu Sub County Hospital", "Tawa Sub County Hospial"))
+  
+names(pep_facilities) <- c("X_COORD", "Y_COORD", "name", "owner_type_name")
+
+# Keep only point coordinates within the shapefile bounds
+coordinates(pep_facilities) <- ~ X_COORD + Y_COORD 
+
+crs(pep_facilities) <- crs(analysis.shp)
+
+overlap <- over(pep_facilities, analysis.shp)
+
+pep_facilities <- pep_facilities[!is.na(overlap$iso),]
+
+points <- as.matrix(pep_facilities@coords)
+
+pep_facilities_access_raster <- gdistance::accCost(T.GC, points)
+pep_facilities_access_raster1 <- gdistance::accCost(T.GC1, points)
+
+p <- malariaAtlas::autoplot_MAPraster(pep_facilities_access_raster, 
+                        shp_df=analysis.shp, printed=F)
+
+p1 <- malariaAtlas::autoplot_MAPraster(pep_facilities_access_raster1, 
+                        shp_df=analysis.shp, printed=F)
+
+pep_plot <- p[[1]] + 
+  geom_point(data=data.frame(pep_facilities@coords), 
+                           aes(x=X_COORD, y=Y_COORD)) +
+  scale_fill_gradientn(colors = rev(rje::cubeHelix(gamma=1.0, 
+                                                 start=1.5, 
+                                                 r=-1.0, 
+                                                 hue=1.5, 
+                                                 n=16)), 
+                     name="Minutes \n of Travel") + 
+   ggtitle("Travel Time to all the health facilities") +
+  theme(axis.text=element_blank(),
+  panel.border=element_rect(fill=NA, color="white"))
+
+pep_plot1 <- p1[[1]] + 
+  geom_point(data=data.frame(pep_facilities@coords), 
+                           aes(x=X_COORD, y=Y_COORD)) +
+  scale_fill_gradientn(colors = rev(rje::cubeHelix(gamma=1.0, 
+                                                 start=1.5, 
+                                                 r=-1.0, 
+                                                 hue=1.5, 
+                                                 n=16)), 
+                     name="Minutes \n of Travel") + 
+   ggtitle("Travel Time to all the health facilities") +
+  theme(axis.text=element_blank(),
+  panel.border=element_rect(fill=NA, color="white"))
+
+print(pep_plot)
+print(pep_plot1)
+
+```
+
+## contact tracing data
+
+```{r}
+
+## Point locations
+CT_facilities <- all_fac %>% 
+  dplyr::select(longitude, latitude, facility_type_name,owner_type_name,keph_level_name, county, official_name)%>%
+  filter(official_name %in% "Makueni County Referral Hospital")
+  
+names(CT_facilities) <- c("X_COORD", "Y_COORD", "name", "owner_type_name")
+
+# Keep only point coordinates within the shapefile bounds
+coordinates(CT_facilities) <- ~ X_COORD + Y_COORD 
+
+crs(CT_facilities) <- crs(analysis.shp)
+
+overlap <- over(CT_facilities, analysis.shp)
+
+CT_facilities <- CT_facilities[!is.na(overlap$iso),]
+
+points <- as.matrix(CT_facilities@coords)
+
+CT_facilities_access_raster <- gdistance::accCost(T.GC, points)
+CT_facilities_access_raster1 <- gdistance::accCost(T.GC1, points)
+
+p <- malariaAtlas::autoplot_MAPraster(CT_facilities_access_raster, 
+                        shp_df=analysis.shp, printed=F)
+
+p1 <- malariaAtlas::autoplot_MAPraster(CT_facilities_access_raster1, 
+                        shp_df=analysis.shp, printed=F)
+
+pep_plot <- p[[1]] + 
+  geom_point(data=data.frame(CT_facilities@coords), 
+                           aes(x=X_COORD, y=Y_COORD)) +
+  scale_fill_gradientn(colors = rev(rje::cubeHelix(gamma=1.0, 
+                                                 start=1.5, 
+                                                 r=-1.0, 
+                                                 hue=1.5, 
+                                                 n=16)), 
+                     name="Minutes \n of Travel") + 
+   ggtitle("Travel Time to MCRH") +
+  theme(axis.text=element_blank(),
+  panel.border=element_rect(fill=NA, color="white"))
+
+pep_plot1 <- p1[[1]] + 
+  geom_point(data=data.frame(CT_facilities@coords), 
+                           aes(x=X_COORD, y=Y_COORD)) +
+  scale_fill_gradientn(colors = rev(rje::cubeHelix(gamma=1.0, 
+                                                 start=1.5, 
+                                                 r=-1.0, 
+                                                 hue=1.5, 
+                                                 n=16)), 
+                     name="Minutes \n of Travel") + 
+   ggtitle("Walking time to MCRH") +
+  theme(axis.text=element_blank(),
+  panel.border=element_rect(fill=NA, color="white"))
+
+print(pep_plot)
+print(pep_plot1)
+
+```
+
+
+```{r}
+# saving all the plots to use in calculating proportion of population at different travel times
+
+writeRaster(all_facilities_access_raster, here("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/data/kenya/rasters/travel_times/all_facilities_access_raster.tif"), overwrite=TRUE)
+  
+writeRaster(pep_facilities_access_raster, here("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/data/kenya/rasters/travel_times/pep_facilities_access_raster.tif"), overwrite=T)
+
+writeRaster(all_facilities_access_raster1, here("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/data/kenya/rasters/travel_times/all_facilities_access_raster1.tif"), overwrite=TRUE)
+  
+writeRaster(pep_facilities_access_raster1, here("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/data/kenya/rasters/travel_times/pep_facilities_access_raster1.tif"), overwrite=T)
+
+writeRaster(CT_facilities_access_raster, here("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/data/kenya/rasters/travel_times/CT_facilities_access_raster.tif"), overwrite=TRUE)
+  
+writeRaster(CT_facilities_access_raster1, here("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/data/kenya/rasters/travel_times/CT_facilities_access_raster1.tif"), overwrite=T)
+
+```
+
+# calculating the accessibility - all facilities
+
+```{r}
+
+popsum <- raster(here("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/raw/data/processed/worldpop/constrained/makueni_constrained_pop.tif"))
+
+health_facilities <- st_read("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/raw/data/processed/health_facilities/facility_with_capacity.shp")%>%
+  filter(county %in% "Makueni")
+
+#### reclassifying the motorised travel time to all health facilities in Makueni raster file ####
+
+access_all_facilities <- raster(here("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/data/kenya/rasters/travel_times/all_facilities_access_raster.tif")) #importing the raster files
+
+# creating a reclassification matrix
+reclass <- c(0, 30, 1, # within 30 minutes
+             30, 60, 2, # within 60 minutes
+             60, 90, 3, # within 90 minutes
+             90, 120, 4, # within 120 minutes
+             120, Inf, 5) # greater than 120 minutes
+
+reclass.mat <- matrix(reclass,
+                      ncol = 3,
+                      byrow = TRUE)
+
+# reclassifying access_level6_facilities raster
+all.surgperm.cat <- reclassify(access_all_facilities,
+                                 reclass.mat,
+                                 include.lowest = TRUE) # this includes a travel time of zero in the lowest group
+ 
+
+# convert raster to polygon and dissolve
+all.surgperm.cat.poly.diss <- rasterToPolygons(all.surgperm.cat, dissolve=TRUE)
+all.surgperm.cat.poly.diss1 <- rasterToPolygons(access_all_facilities, dissolve=TRUE)
+
+ 
+all.surgperm.cat.poly.diss <- st_as_sf(all.surgperm.cat.poly.diss, crs = 4326)
+all.surgperm.cat.poly.diss1 <- st_as_sf(all.surgperm.cat.poly.diss1, crs = 4326)
+
+ 
+colnames(all.surgperm.cat.poly.diss)[colnames(all.surgperm.cat.poly.diss) == "layer"] ="all_facilities_access_raster"
+
+colnames(all.surgperm.cat.poly.diss1)[colnames(all.surgperm.cat.poly.diss1) == "layer"] ="all_facilities_access_raster"
+ 
+#### 1.5 speeding up st_intersection using a function & zonal statistics ####
+# This function was copied from this thread: https://github.com/r-spatial/sf/issues/801
+ 
+st_intersection_faster <- function(x,y){
+  #faster replacement for st_intersection(x, y,...)
+  y_subset <-
+    st_intersects(x, y) %>%
+    unlist() %>%
+    unique() %>%
+    sort() %>%
+    {y[.,]}
+  st_intersection(x, y_subset)
+}
+ 
+all.surgperm.cat.poly.diss.adm1 <- st_intersection_faster(all.surgperm.cat.poly.diss, adm1)
+
+all.surgperm.cat.poly.diss.adm2 <- st_intersection_faster(all.surgperm.cat.poly.diss1, adm1)
+ 
+all.surgperm.cat.poly.diss.adm1 <- all.surgperm.cat.poly.diss.adm1 %>%
+  mutate(pop =exact_extract(popsum, all.surgperm.cat.poly.diss.adm1,
+                            'sum'))
+
+all.surgperm.cat.poly.diss.adm2 <- all.surgperm.cat.poly.diss.adm2 %>%
+  mutate(pop =exact_extract(popsum, all.surgperm.cat.poly.diss.adm2,
+                            'sum')) #%>%
+  # #group_by(NAME_2) %>%
+  # mutate(pop = round(pop, digits = 0),
+  #        pop_prop = round((pop / sum(pop) * 10000), digits = 2))%>%
+  # filter(!pop_pct %in% 0)
+
+ 
+#### 1.6 summarise motorised travel time to health facilities in Kenya at the national and county levels ####
+ 
+#### 1.6.1 at the adm0 level ####
+ 
+all_pop_pct_by_access_at_adm0 <- as.data.frame(all.surgperm.cat.poly.diss.adm1[, c("all_facilities_access_raster", "pop")]) %>%
+  group_by(all_facilities_access_raster) %>%
+  summarise_at(c("pop"), sum,
+               na.rm = TRUE) %>%
+  #ungroup() %>%
+  mutate(travel_minutes = case_when(
+    all_facilities_access_raster == 1 ~ "≤30",
+    all_facilities_access_raster == 2 ~ "31-60",
+    all_facilities_access_raster == 3 ~ "61-90",
+    all_facilities_access_raster == 4 ~ "91-120",
+    all_facilities_access_raster == 5 ~ ">120")) %>%
+  filter(!is.na(travel_minutes))|>
+  mutate(pop = round(pop, digits = 0),
+         pop_pct0 = round((pop / sum(pop) * 100), digits = 2),
+         pop_pct = round((pop / sum(pop) * 100), digits = 1)) %>%
+  mutate(transport = "motor",
+         service = "accessibility",
+         country = "Kenya")
+
+all_pop_pct_by_access_at_adm0 <- all_pop_pct_by_access_at_adm0[, c("country", "transport", "service", "travel_minutes", "all_facilities_access_raster", "pop","pop_pct0","pop_pct")]
+
+# plotting the graphs
+
+# ggplot(data = all.surgperm.cat.poly.diss.adm2, aes(x=all_facilities_access_raster, y=pop_prop))+
+#   geom_line()+
+#   facet_wrap(~NAME_2, scales = "free_x")+
+#   labs(x="facility access time (minutes)", y="Population proportion per 10000")
+
+
+all_pop_pct_by_access_n_adm1 <- as.data.frame(all.surgperm.cat.poly.diss.adm1[, c("all_facilities_access_raster", "NAME_1", "pop")]) %>%
+  dplyr::group_by(NAME_1, all_facilities_access_raster) %>%
+  mutate(adm1_pop = round(sum(pop), digits = 0)) %>%
+  ungroup() %>%
+  mutate(travel_minutes = case_when(
+    all_facilities_access_raster == 1 ~ "≤30",
+    all_facilities_access_raster == 2 ~ "31-60",
+    all_facilities_access_raster == 3 ~ "61-90",
+    all_facilities_access_raster == 4 ~ "91-120",
+    all_facilities_access_raster == 5 ~ ">120")) %>%
+  mutate(pop_1hr = round(pop, digits = 0),
+         pop_pct_1hr = round((pop / adm1_pop * 100), digits = 1)) %>%
+  filter(all_facilities_access_raster <= 2) %>%
+  group_by(NAME_1) %>%
+  mutate(pop_2hr = round(sum(pop), digits = 0),
+         pop_pct_2hr = round((pop_2hr / adm1_pop * 100), digits = 1),
+         rid = row_number(NAME_1),
+         le_1hour = paste0(pop_1hr, " (", (paste0(sprintf("%1.1f", pop_pct_1hr))),"%)"),
+         le_2hour = paste0(pop_2hr, " (", (paste0(sprintf("%1.1f", pop_pct_2hr))),"%)"),
+         Transport = "motor",
+         Service = "accessibility health facilities",
+         Country = "Kenya") %>%
+  #filter(rid == 1) %>%
+  ungroup()
+ 
+ 
+#### 2. PLOT ####
+#### 2.1 access map ####
+# raster to data frame
+access_all_facilities.df <- raster::as.data.frame(access_all_facilities, xy=TRUE)
+
+access_all_facilities.df <- na.omit(access_all_facilities.df)
+ 
+# create fixed interval
+fix.brks <- classIntervals(access_all_facilities.df$all_facilities_access_raster, n = 5, style="fixed",
+                           fixedBreaks=c(-0.1, 30, 60, 90, 120, Inf), # used '-0.1' to make sure 0 is included
+                           intervalClosure="right")
+ 
+access_all_facilities.df <- access_all_facilities.df %>%
+  mutate(pop_cat = cut(all_facilities_access_raster, fix.brks$brks))
+ 
+# plotting
+all_map <- ggplot() +
+  geom_sf(data = adm0, fill = "#d9d9d9", alpha = 1,
+          show.legend = NA, color = NA) +
+  geom_raster(data = access_all_facilities.df,
+              aes(x=x, y=y, fill = factor(pop_cat)),
+              interpolate = FALSE, show.legend = NA) +
+  scale_fill_manual(
+    guide = "none",
+    values = c("#f7fbff","#c6dbef", "#6baed6", "#2171b5", "#08306b"),
+    na.value = "#969696") +
+  # add adm1 and adm0 outlines
+  geom_sf(data = adm1, fill = NA, lwd = 0.1, colour="#000000", show.legend = NA) +
+  geom_sf(data = adm0, fill = NA, lwd = 0.1, colour="#000000", show.legend = NA) +
+  # add north arrow and scale
+  annotation_scale(location = "bl", width_hint = 0.25,
+                   pad_x = unit(0.26, "in"), pad_y = unit(0.4, "in"),
+                   height = unit(0.15, "cm")) +
+  annotation_north_arrow(location = "bl", which_north = "true",
+                         pad_x = unit(0.57, "in"), pad_y = unit(0.6, "in"),
+                         height = unit(0.9, "cm"), width = unit(0.81, "cm"),
+                         style = north_arrow_fancy_orienteering(text_size = 10)) +
+  # add facility as point
+  geom_sf(data = health_facilities, aes(geometry = geometry, col="kph_lvl"),
+          size = 3.5, shape = "+") +
+  scale_colour_manual(name = " ", values = "black",
+                      labels =c("health facility"),
+                      guide = guide_legend())+
+  theme(legend.position = c(1.11, 0.75),
+        legend.key.size = unit(0.4, 'cm'), #change legend key size
+        legend.key.height = unit(0.4, 'cm'), #change legend key height
+        legend.key.width = unit(0.4, 'cm'), #change legend key width
+        legend.text = element_text(size=10.0,face="bold"), #change legend text font size
+        legend.spacing.y = unit(0, "pt")) +
+  theme(plot.margin = margin(t = 0,  # Top margin
+                             r = 20,  # Right margin
+                             b = 0,  # Bottom margin
+                             l = 0),
+        panel.background = element_blank(),
+        axis.line = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title = element_blank(),
+        panel.grid.major = element_blank(), # optional - remove gridlines
+        panel.grid.minor = element_blank(), # optional - remove gridlines
+        plot.background = element_rect(fill='transparent', color=NA),
+        legend.background = element_rect(fill='transparent'),
+        legend.box.background = element_rect(fill='transparent', color=NA),
+        legend.key=element_rect(fill="transparent"), # remove grey background color of the key
+        legend.margin =  margin(0,0,0,0,unit="pt")) # removing the space between the keys
+ 
+all_map
+ 
+#### 2.2 barchart legend using ggplot ####
+#### 2.2.1 process data ####
+hist_factor = 2
+legend_w = 24
+vline_w = 0.2
+ 
+bar_adm0 <- all_pop_pct_by_access_at_adm0 %>%
+  mutate(pop_pct1 = pop_pct0 + legend_w,
+         alpha = 1,
+         label=ifelse(all_facilities_access_raster != 5, (paste0(sprintf("%1.1f", pop_pct), "%")), "0.0%"))
+ 
+#### 2.2.2 barchart legend  ####
+ 
+barchart_plot <- ggplot(bar_adm0, aes(x = reorder(travel_minutes,-all_facilities_access_raster),
+                                y = pop_pct1/hist_factor,
+                                fill = as.factor(all_facilities_access_raster), alpha=factor(alpha))) +
+  coord_flip() +
+  scale_fill_manual(
+    values = c("#f7fbff","#c6dbef", "#6baed6", "#2171b5", "#08306b"),
+    na.value = "#d9d9d9") +
+  scale_alpha_manual(values = c("1" = 1),
+                     guide = "none") +
+  geom_bar(stat = 'identity',  width = 0.8,
+           color="#d9d9d9", linewidth = 0.05, na.rm = TRUE) +
+  geom_hline(aes(yintercept=legend_w/hist_factor),col = "white", linewidth = 0.55) +
+  geom_text(aes(label=label,
+                y = 25),
+            size = 3.5,
+            position=position_dodge(width=0.9), vjust= 0.5,
+            hjust= 0,fontface = "bold") +
+  scale_colour_manual(values=c("#000000", "#de77ae")) +
+  theme_bw() +
+  labs(title="Travel minutes to nearest facility given population",
+    x = "", y = "") +
+  theme_classic() +
+  theme(plot.title = element_text(size=11, colour="#000000", hjust = 0, vjust = 0,face="bold"),
+    axis.text.y = element_text(size=11, colour="#000000",face="bold"),
+    panel.grid.minor = element_blank(),
+    panel.background = element_blank(),
+    axis.ticks=element_blank(),
+    axis.line = element_blank(),
+    axis.text.x = element_blank(),
+    legend.position = "none",
+    plot.margin = margin(t = 5,  # Top margin
+                         r = 0,  # Right margin
+                         b = 0,  # Bottom margin
+                         l = 10)) +
+  theme(panel.background = element_rect(fill='transparent', color=NA),
+        plot.background = element_rect(fill='transparent', color=NA),
+        legend.background = element_rect(fill='transparent'),
+        legend.box.background = element_rect(fill='transparent'),
+        aspect.ratio = 1/1.2)
+ 
+barchart_plot
+ 
+#### 2.3 combined plot ####
+# set map path and name
+combined <- here("Makueni/maps",
+               "motorised travelling to facilities Makueni.png")
+ 
+combined
+ 
+combined_plots1 <- cowplot::ggdraw() +
+  draw_plot(all_map, height = 1, width = 0.8) +
+  expand_limits(x = 0.5, y = 1) +
+  draw_plot(barchart_plot, x = 0.59, y = 0.39, hjust = 0, vjust = 0,
+            width = 0.32, height = 0.32) +
+  theme(plot.margin = margin(t=0.1, l= -0.1, b=0.1, r=0.6, "cm"),
+    plot.background = element_rect(fill='transparent', color=NA))
+ 
+ggsave(plot = combined_plots1, file = combined,
+       type = "cairo_MN-png",
+       bg = "white",
+       width = 23.5, height = 16, units = "cm", dpi = 600)
+```
+
+
+# calculating the accessibility - PEP facilities
+
+```{r}
+
+pep_health_facilities <- st_read("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/raw/data/processed/health_facilities/facility_with_capacity.shp")%>%
+  filter(county %in% "Makueni")%>%
+  filter(offcl_n %in% c("Kibwezi Sub County Hospital", "Kilungu Sub County Hospital", "Kisau Sub County Hospital", "Makindu Sub County Hospital", "Makueni County Referral Hospital", "Matiliku Sub County Hospital", "Mbooni Sub County Hospital", "Mtito Andei Sub County Hospital", "Mukuyuni Sub County Hospital", "Sultan Hamud Sub County Hospital", "Kambu Sub County Hospital", "Tawa Sub County Hospial"))
+  
+
+#### reclassifying the motorised travel time to all health facilities in Makueni raster file ####
+
+access_pep_facilities <- raster(here("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/data/kenya/rasters/travel_times/pep_facilities_access_raster.tif")) #importing the raster files
+
+# creating a reclassification matrix
+reclass <- c(0, 30, 1, # within 30 minutes
+             30, 60, 2, # within 60 minutes
+             60, 90, 3, # within 90 minutes
+             90, 120, 4, # within 120 minutes
+             120, Inf, 5) # greater than 120 minutes
+
+reclass.mat <- matrix(reclass,
+                      ncol = 3,
+                      byrow = TRUE)
+
+# reclassifying access_level6_facilities raster
+pep.surgperm.cat <- reclassify(access_pep_facilities,
+                                 reclass.mat,
+                                 include.lowest = TRUE) # this includes a travel time of zero in the lowest group
+ 
+# convert raster to polygon and dissolve
+pep.surgperm.cat.poly.diss <- rasterToPolygons(pep.surgperm.cat, dissolve=TRUE)
+ 
+pep.surgperm.cat.poly.diss <- st_as_sf(pep.surgperm.cat.poly.diss, crs = 4326)
+ 
+colnames(pep.surgperm.cat.poly.diss)[colnames(pep.surgperm.cat.poly.diss) == "layer"] ="pep_facilities_access_raster"
+ 
+#### 1.5 speeding up st_intersection using a function & zonal statistics ####
+# This function was copied from this thread: https://github.com/r-spatial/sf/issues/801
+ 
+st_intersection_faster <- function(x,y){
+  #faster replacement for st_intersection(x, y,...)
+  y_subset <-
+    st_intersects(x, y) %>%
+    unlist() %>%
+    unique() %>%
+    sort() %>%
+    {y[.,]}
+  st_intersection(x, y_subset)
+}
+ 
+pep.surgperm.cat.poly.diss.adm1 <- st_intersection_faster(pep.surgperm.cat.poly.diss, adm1)
+ 
+pep.surgperm.cat.poly.diss.adm1 <- pep.surgperm.cat.poly.diss.adm1 %>%
+  mutate(pop =exact_extract(popsum, pep.surgperm.cat.poly.diss.adm1,
+                            'sum'))
+ 
+#### 1.6 summarise motorised travel time to health facilities in Kenya at the national and county levels ####
+ 
+#### 1.6.1 at the adm0 level ####
+ 
+pep_pop_pct_by_access_at_adm0 <- as.data.frame(pep.surgperm.cat.poly.diss.adm1[, c("pep_facilities_access_raster", "pop")]) %>%
+  group_by(pep_facilities_access_raster) %>%
+  summarise_at(c("pop"), sum,
+               na.rm = TRUE) %>%
+  #ungroup() %>%
+  mutate(travel_minutes = case_when(
+    pep_facilities_access_raster == 1 ~ "≤30",
+    pep_facilities_access_raster == 2 ~ "31-60",
+    pep_facilities_access_raster == 3 ~ "61-90",
+    pep_facilities_access_raster == 4 ~ "91-120",
+    pep_facilities_access_raster == 5 ~ ">120")) %>%
+  filter(!is.na(travel_minutes))|>
+  mutate(pop = round(pop, digits = 0),
+         pop_pct0 = round((pop / sum(pop) * 100), digits = 2),
+         pop_pct = round((pop / sum(pop) * 100), digits = 1)) %>%
+  mutate(transport = "motor",
+         service = "accessibility",
+         country = "Kenya")
+ 
+pep_pop_pct_by_access_at_adm0 <- pep_pop_pct_by_access_at_adm0[, c("country", "transport", "service", "travel_minutes", "pep_facilities_access_raster", "pop","pop_pct0","pop_pct")]
+
+# plotting the graphs
+
+pep_pop_pct_by_access_n_adm1 <- as.data.frame(pep.surgperm.cat.poly.diss.adm1[, c("pep_facilities_access_raster", "NAME_1", "pop")]) %>%
+  dplyr::group_by(NAME_1, pep_facilities_access_raster) %>%
+  mutate(adm1_pop = round(sum(pop), digits = 0)) %>%
+  ungroup() %>%
+  mutate(travel_minutes = case_when(
+    pep_facilities_access_raster == 1 ~ "≤30",
+    pep_facilities_access_raster == 2 ~ "31-60",
+    pep_facilities_access_raster == 3 ~ "61-90",
+    pep_facilities_access_raster == 4 ~ "91-120",
+    pep_facilities_access_raster == 5 ~ ">120")) %>%
+  mutate(pop_1hr = round(pop, digits = 0),
+         pop_pct_1hr = round((pop / adm1_pop * 100), digits = 1)) %>%
+  filter(pep_facilities_access_raster <= 2) %>%
+  group_by(NAME_1) %>%
+  mutate(pop_2hr = round(sum(pop), digits = 0),
+         pop_pct_2hr = round((pop_2hr / adm1_pop * 100), digits = 1),
+         rid = row_number(NAME_1),
+         le_1hour = paste0(pop_1hr, " (", (paste0(sprintf("%1.1f", pop_pct_1hr))),"%)"),
+         le_2hour = paste0(pop_2hr, " (", (paste0(sprintf("%1.1f", pop_pct_2hr))),"%)"),
+         Transport = "motor",
+         Service = "accessibility health facilities",
+         Country = "Kenya") %>%
+  #filter(rid == 1) %>%
+  ungroup()
+ 
+ 
+#### 2. PLOT ####
+#### 2.1 access map ####
+# raster to data frame
+access_pep_facilities.df <- raster::as.data.frame(access_pep_facilities, xy=TRUE)
+
+access_pep_facilities.df <- na.omit(access_pep_facilities.df)
+ 
+# create fixed interval
+fix.brks <- classIntervals(access_pep_facilities.df$pep_facilities_access_raster, n = 5, style="fixed",
+                           fixedBreaks=c(-0.1, 30, 60, 90, 120, Inf), # used '-0.1' to make sure 0 is included
+                           intervalClosure="right")
+ 
+access_pep_facilities.df <- access_pep_facilities.df %>%
+  mutate(pop_cat = cut(pep_facilities_access_raster, fix.brks$brks))
+ 
+# plotting
+pep_map <- ggplot() +
+  geom_sf(data = adm0, fill = "#d9d9d9", alpha = 1,
+          show.legend = NA, color = NA) +
+  geom_raster(data = access_pep_facilities.df,
+              aes(x=x, y=y, fill = factor(pop_cat)),
+              interpolate = FALSE, show.legend = NA) +
+  scale_fill_manual(
+    guide = "none",
+    values = c("#f7fbff","#c6dbef", "#6baed6", "#2171b5", "#08306b"),
+    na.value = "#969696") +
+  # add adm1 and adm0 outlines
+  geom_sf(data = adm1, fill = NA, lwd = 0.1, colour="#000000", show.legend = NA) +
+  geom_sf(data = adm0, fill = NA, lwd = 0.1, colour="#000000", show.legend = NA) +
+  # add north arrow and scale
+  annotation_scale(location = "bl", width_hint = 0.25,
+                   pad_x = unit(0.26, "in"), pad_y = unit(0.4, "in"),
+                   height = unit(0.15, "cm")) +
+  annotation_north_arrow(location = "bl", which_north = "true",
+                         pad_x = unit(0.57, "in"), pad_y = unit(0.6, "in"),
+                         height = unit(0.9, "cm"), width = unit(0.81, "cm"),
+                         style = north_arrow_fancy_orienteering(text_size = 10)) +
+  # add facility as point
+  geom_sf(data = pep_health_facilities, aes(geometry = geometry, col="kph_lvl"),
+          size = 3.5, shape = "+") +
+  scale_colour_manual(name = " ", values = "red",
+                      labels =c("PEP stocking facility"),
+                      guide = guide_legend())+
+  theme(legend.position = c(1.11, 0.75),
+        legend.key.size = unit(0.4, 'cm'), #change legend key size
+        legend.key.height = unit(0.4, 'cm'), #change legend key height
+        legend.key.width = unit(0.4, 'cm'), #change legend key width
+        legend.text = element_text(size=10.0,face="bold"), #change legend text font size
+        legend.spacing.y = unit(0, "pt")) +
+  theme(plot.margin = margin(t = 0,  # Top margin
+                             r = 20,  # Right margin
+                             b = 0,  # Bottom margin
+                             l = 0),
+        panel.background = element_blank(),
+        axis.line = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title = element_blank(),
+        panel.grid.major = element_blank(), # optional - remove gridlines
+        panel.grid.minor = element_blank(), # optional - remove gridlines
+        plot.background = element_rect(fill='transparent', color=NA),
+        legend.background = element_rect(fill='transparent'),
+        legend.box.background = element_rect(fill='transparent', color=NA),
+        legend.key=element_rect(fill="transparent"), # remove grey background color of the key
+        legend.margin =  margin(0,0,0,0,unit="pt")) # removing the space between the keys
+ 
+pep_map
+ 
+#### 2.2 barchart legend using ggplot ####
+#### 2.2.1 process data ####
+hist_factor = 2
+legend_w = 24
+vline_w = 0.2
+ 
+bar_adm0 <- pep_pop_pct_by_access_at_adm0 %>%
+  mutate(pop_pct1 = pop_pct0 + legend_w,
+         alpha = 1,
+         label=ifelse(pep_facilities_access_raster != 5, (paste0(sprintf("%1.1f", pop_pct), "%")), "0.0%"))
+ 
+#### 2.2.2 barchart legend  ####
+ 
+barchart_plot <- ggplot(bar_adm0, aes(x = reorder(travel_minutes,-pep_facilities_access_raster),
+                                y = pop_pct1/hist_factor,
+                                fill = as.factor(pep_facilities_access_raster), alpha=factor(alpha))) +
+  coord_flip() +
+  scale_fill_manual(
+    values = c("#f7fbff","#c6dbef", "#6baed6", "#2171b5", "#08306b"),
+    na.value = "#d9d9d9") +
+  scale_alpha_manual(values = c("1" = 1),
+                     guide = "none") +
+  geom_bar(stat = 'identity',  width = 0.8,
+           color="#d9d9d9", linewidth = 0.05, na.rm = TRUE) +
+  geom_hline(aes(yintercept=legend_w/hist_factor),col = "white", linewidth = 0.55) +
+  geom_text(aes(label=label,
+                y = 25),
+            size = 3.5,
+            position=position_dodge(width=0.9), vjust= 0.5,
+            hjust= 0, fontface = "bold") +
+  scale_colour_manual(values=c("#000000", "#de77ae")) +
+  theme_bw() +
+  labs(title="Travel minutes to nearest facility given population",
+    x = "", y = "") +
+  theme_classic() +
+  theme(plot.title = element_text(size=11, colour="#000000", hjust = 0, vjust = 0,face="bold"),
+    axis.text.y = element_text(size=11, colour="#000000",face="bold"),
+    panel.grid.minor = element_blank(),
+    panel.background = element_blank(),
+    axis.ticks=element_blank(),
+    axis.line = element_blank(),
+    axis.text.x = element_blank(),
+    legend.position = "none",
+    plot.margin = margin(t = 5,  # Top margin
+                         r = 0,  # Right margin
+                         b = 0,  # Bottom margin
+                         l = 10)) +
+  theme(panel.background = element_rect(fill='transparent', color=NA),
+        plot.background = element_rect(fill='transparent', color=NA),
+        legend.background = element_rect(fill='transparent'),
+        legend.box.background = element_rect(fill='transparent'),
+        aspect.ratio = 1/1.2)
+ 
+barchart_plot
+ 
+#### 2.3 combined plot ####
+# set map path and name
+combined <- here("Makueni/maps",
+               "motorised travelling to PEP facilities Makueni.png")
+ 
+combined
+ 
+combined_plots2 <- cowplot::ggdraw() +
+  draw_plot(pep_map, height = 1, width = 0.8) +
+  expand_limits(x = 0.5, y = 0) +
+  draw_plot(barchart_plot, x = 0.59, y = 0.39, hjust = 0, vjust = 0,
+            width = 0.32, height = 0.32) +
+  theme(plot.margin = margin(t=0.1, l= -0.1, b=0.1, r=0.6, "cm"),
+    plot.background = element_rect(fill='transparent', color=NA))
+ 
+ggsave(plot = combined_plots2, file = combined,
+       type = "cairo_MN-png",
+       bg = "white",
+       width = 23.5, height = 16, units = "cm", dpi = 600)
+
+figure<-ggarrange(combined_plots1, combined_plots2,
+    labels = c("A", "B"), nrow  = 1, font.label=list(color="black",size=25,  align = "hv"))
+
+figure
+
+ggsave("combined_driving.png",figure, width = 23, height = 10, units = "in", bg="white")
+```
+
+
+#using walking as a mode of travel
+
+```{r}
+
+access_all_facilities1 <- raster(here("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/data/kenya/rasters/travel_times/all_facilities_access_raster1.tif")) #importing the raster files
+
+# creating a reclassification matrix
+reclass <- c(0, 30, 1, # within 30 minutes
+             30, 60, 2, # within 60 minutes
+             60, 90, 3, # within 90 minutes
+             90, 120, 4, # within 120 minutes
+             120, Inf, 5) # greater than 120 minutes
+
+reclass.mat <- matrix(reclass,
+                      ncol = 3,
+                      byrow = TRUE)
+
+# reclassifying access_level6_facilities raster
+all.surgperm.cat <- reclassify(access_all_facilities1,
+                                 reclass.mat,
+                                 include.lowest = TRUE) # this includes a travel time of zero in the lowest group
+ 
+# convert raster to polygon and dissolve
+all.surgperm.cat.poly.diss <- rasterToPolygons(all.surgperm.cat, dissolve=TRUE)
+ 
+all.surgperm.cat.poly.diss <- st_as_sf(all.surgperm.cat.poly.diss, crs = 4326)
+ 
+colnames(all.surgperm.cat.poly.diss)[colnames(all.surgperm.cat.poly.diss) == "layer"] ="all_facilities_access_raster1"
+ 
+#### 1.5 speeding up st_intersection using a function & zonal statistics ####
+# This function was copied from this thread: https://github.com/r-spatial/sf/issues/801
+ 
+st_intersection_faster <- function(x,y){
+  #faster replacement for st_intersection(x, y,...)
+  y_subset <-
+    st_intersects(x, y) %>%
+    unlist() %>%
+    unique() %>%
+    sort() %>%
+    {y[.,]}
+  st_intersection(x, y_subset)
+}
+ 
+all.surgperm.cat.poly.diss.adm1 <- st_intersection_faster(all.surgperm.cat.poly.diss, adm1)
+ 
+all.surgperm.cat.poly.diss.adm1 <- all.surgperm.cat.poly.diss.adm1 %>%
+  mutate(pop =exact_extract(popsum, all.surgperm.cat.poly.diss.adm1,
+                            'sum'))
+ 
+#### 1.6 summarise motorised travel time to health facilities in Kenya at the national and county levels ####
+ 
+#### 1.6.1 at the adm0 level ####
+ 
+all_pop_pct_by_access_at_adm0 <- as.data.frame(all.surgperm.cat.poly.diss.adm1[, c("all_facilities_access_raster1", "pop")]) %>%
+  group_by(all_facilities_access_raster1) %>%
+  summarise_at(c("pop"), sum,
+               na.rm = TRUE) %>%
+  #ungroup() %>%
+  mutate(travel_minutes = case_when(
+    all_facilities_access_raster1 == 1 ~ "≤30",
+    all_facilities_access_raster1 == 2 ~ "31-60",
+    all_facilities_access_raster1 == 3 ~ "61-90",
+    all_facilities_access_raster1 == 4 ~ "91-120",
+    all_facilities_access_raster1 == 5 ~ ">120")) %>%
+  filter(!is.na(travel_minutes))|>
+  mutate(pop = round(pop, digits = 0),
+         pop_pct0 = round((pop / sum(pop) * 100), digits = 2),
+         pop_pct = round((pop / sum(pop) * 100), digits = 1)) %>%
+  mutate(transport = "motor",
+         service = "accessibility",
+         country = "Kenya")
+ 
+all_pop_pct_by_access_at_adm0 <- all_pop_pct_by_access_at_adm0[, c("country", "transport", "service", "travel_minutes", "all_facilities_access_raster1", "pop","pop_pct0","pop_pct")]
+
+# plotting the graphs
+
+all_pop_pct_by_access_n_adm1 <- as.data.frame(all.surgperm.cat.poly.diss.adm1[, c("all_facilities_access_raster1", "NAME_1", "pop")]) %>%
+  dplyr::group_by(NAME_1, all_facilities_access_raster1) %>%
+  mutate(adm1_pop = round(sum(pop), digits = 0)) %>%
+  ungroup() %>%
+  mutate(travel_minutes = case_when(
+    all_facilities_access_raster1 == 1 ~ "≤30",
+    all_facilities_access_raster1 == 2 ~ "31-60",
+    all_facilities_access_raster1 == 3 ~ "61-90",
+    all_facilities_access_raster1 == 4 ~ "91-120",
+    all_facilities_access_raster1 == 5 ~ ">120")) %>%
+  mutate(pop_1hr = round(pop, digits = 0),
+         pop_pct_1hr = round((pop / adm1_pop * 100), digits = 1)) %>%
+  filter(all_facilities_access_raster1 <= 2) %>%
+  group_by(NAME_1) %>%
+  mutate(pop_2hr = round(sum(pop), digits = 0),
+         pop_pct_2hr = round((pop_2hr / adm1_pop * 100), digits = 1),
+         rid = row_number(NAME_1),
+         le_1hour = paste0(pop_1hr, " (", (paste0(sprintf("%1.1f", pop_pct_1hr))),"%)"),
+         le_2hour = paste0(pop_2hr, " (", (paste0(sprintf("%1.1f", pop_pct_2hr))),"%)"),
+         Transport = "motor",
+         Service = "accessibility health facilities",
+         Country = "Kenya") %>%
+  #filter(rid == 1) %>%
+  ungroup()
+ 
+ 
+#### 2. PLOT ####
+#### 2.1 access map ####
+# raster to data frame
+access_all_facilities.df <- raster::as.data.frame(access_all_facilities1, xy=TRUE)
+
+access_all_facilities.df <- na.omit(access_all_facilities.df)
+ 
+# create fixed interval
+fix.brks <- classIntervals(access_all_facilities.df$all_facilities_access_raster1, n = 5, style="fixed",
+                           fixedBreaks=c(-0.1, 30, 60, 90, 120, Inf), # used '-0.1' to make sure 0 is included
+                           intervalClosure="right")
+ 
+access_all_facilities.df <- access_all_facilities.df %>%
+  mutate(pop_cat = cut(all_facilities_access_raster1, fix.brks$brks))
+ 
+# plotting
+all_map <- ggplot() +
+  geom_sf(data = adm0, fill = "#d9d9d9", alpha = 1,
+          show.legend = NA, color = NA) +
+  geom_raster(data = access_all_facilities.df,
+              aes(x=x, y=y, fill = factor(pop_cat)),
+              interpolate = FALSE, show.legend = NA) +
+  scale_fill_manual(
+    guide = "none",
+    values = c("#f7fbff","#c6dbef", "#6baed6", "#2171b5", "#08306b"),
+    na.value = "#969696") +
+  # add adm1 and adm0 outlines
+  geom_sf(data = adm1, fill = NA, lwd = 0.1, colour="#000000", show.legend = NA) +
+  geom_sf(data = adm0, fill = NA, lwd = 0.1, colour="#000000", show.legend = NA) +
+  # add north arrow and scale
+  annotation_scale(location = "bl", width_hint = 0.25,
+                   pad_x = unit(0.26, "in"), pad_y = unit(0.4, "in"),
+                   height = unit(0.15, "cm")) +
+  annotation_north_arrow(location = "bl", which_north = "true",
+                         pad_x = unit(0.57, "in"), pad_y = unit(0.6, "in"),
+                         height = unit(0.9, "cm"), width = unit(0.81, "cm"),
+                         style = north_arrow_fancy_orienteering(text_size = 10)) +
+  # add facility as point
+  geom_sf(data = health_facilities, aes(geometry = geometry, col="kph_lvl"),
+          size = 3.5, shape = "+") +
+  scale_colour_manual(name = " ", values = "black",
+                      labels =c("health facility"),
+                      guide = guide_legend())+
+  theme(legend.position = c(1.11, 0.75),
+        legend.key.size = unit(0.4, 'cm'), #change legend key size
+        legend.key.height = unit(0.4, 'cm'), #change legend key height
+        legend.key.width = unit(0.4, 'cm'), #change legend key width
+        legend.text = element_text(size=10.0,face="bold"), #change legend text font size
+        legend.spacing.y = unit(0, "pt")) +
+  theme(plot.margin = margin(t = 0,  # Top margin
+                             r = 20,  # Right margin
+                             b = 0,  # Bottom margin
+                             l = 0),
+        panel.background = element_blank(),
+        axis.line = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title = element_blank(),
+        panel.grid.major = element_blank(), # optional - remove gridlines
+        panel.grid.minor = element_blank(), # optional - remove gridlines
+        plot.background = element_rect(fill='transparent', color=NA),
+        legend.background = element_rect(fill='transparent'),
+        legend.box.background = element_rect(fill='transparent', color=NA),
+        legend.key=element_rect(fill="transparent"), # remove grey background color of the key
+        legend.margin =  margin(0,0,0,0,unit="pt")) # removing the space between the keys
+ 
+all_map
+ 
+#### 2.2 barchart legend using ggplot ####
+#### 2.2.1 process data ####
+hist_factor = 2
+legend_w = 24
+vline_w = 0.2
+ 
+bar_adm0 <- all_pop_pct_by_access_at_adm0 %>%
+  mutate(pop_pct1 = pop_pct0 + legend_w,
+         alpha = 1,
+         label=ifelse(all_facilities_access_raster1 != 5, (paste0(sprintf("%1.1f", pop_pct), "%")), "0.2%"))
+ 
+#### 2.2.2 barchart legend  ####
+ 
+barchart_plot <- ggplot(bar_adm0, aes(x = reorder(travel_minutes,-all_facilities_access_raster1),
+                                y = pop_pct1/hist_factor,
+                                fill = as.factor(all_facilities_access_raster1), alpha=factor(alpha))) +
+  coord_flip() +
+  scale_fill_manual(
+    values = c("#f7fbff","#c6dbef", "#6baed6", "#2171b5", "#08306b"),
+    na.value = "#d9d9d9") +
+  scale_alpha_manual(values = c("1" = 1),
+                     guide = "none") +
+  geom_bar(stat = 'identity',  width = 0.8,
+           color="#d9d9d9", linewidth = 0.05, na.rm = TRUE) +
+  geom_hline(aes(yintercept=legend_w/hist_factor),col = "white", linewidth = 0.55) +
+  geom_text(aes(label=label,
+                y = 25),
+            size = 3.5,
+            position=position_dodge(width=0.9), vjust= 0.5,
+            hjust= 0,fontface = "bold") +
+  scale_colour_manual(values=c("#000000", "#de77ae")) +
+  theme_bw() +
+  labs(title="Travel minutes to nearest facility given population",
+    x = "", y = "") +
+  theme_classic() +
+  theme(plot.title = element_text(size=11, colour="#000000", hjust = 0, vjust = 0,face="bold"),
+    axis.text.y = element_text(size=11, colour="#000000",face="bold"),
+    panel.grid.minor = element_blank(),
+    panel.background = element_blank(),
+    axis.ticks=element_blank(),
+    axis.line = element_blank(),
+    axis.text.x = element_blank(),
+    legend.position = "none",
+    plot.margin = margin(t = 5,  # Top margin
+                         r = 0,  # Right margin
+                         b = 0,  # Bottom margin
+                         l = 10)) +
+  theme(panel.background = element_rect(fill='transparent', color=NA),
+        plot.background = element_rect(fill='transparent', color=NA),
+        legend.background = element_rect(fill='transparent'),
+        legend.box.background = element_rect(fill='transparent'),
+        aspect.ratio = 1/1.2)
+ 
+barchart_plot
+ 
+#### 2.3 combined plot ####
+# set map path and name
+combined <- here("Makueni/maps",
+               "walking to facilities Makueni.png")
+ 
+combined
+ 
+combined_plots3 <- cowplot::ggdraw() +
+  draw_plot(all_map, height = 1, width = 0.8) +
+  expand_limits(x = 0.5, y = 0) +
+  draw_plot(barchart_plot, x = 0.59, y = 0.39, hjust = 0, vjust = 0,
+            width = 0.32, height = 0.32) +
+  theme(plot.margin = margin(t=0.1, l= -0.1, b=0.1, r=0.6, "cm"),
+    plot.background = element_rect(fill='transparent', color=NA))
+ 
+ggsave(plot = combined_plots3, file = combined,
+       type = "cairo_MN-png",
+       bg = "white",
+       width = 23.5, height = 16, units = "cm", dpi = 600)
+```
+
+# PEP facilities
+```{r}
+
+pep_health_facilities <- st_read("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/raw/data/processed/health_facilities/facility_with_capacity.shp")%>%
+  filter(county %in% "Makueni")%>%
+  filter(offcl_n %in% c("Kibwezi Sub County Hospital", "Kilungu Sub County Hospital", "Kisau Sub County Hospital", "Makindu Sub County Hospital", "Makueni County Referral Hospital", "Matiliku Sub County Hospital", "Mbooni Sub County Hospital", "Mtito Andei Sub County Hospital", "Mukuyuni Sub County Hospital", "Sultan Hamud Sub County Hospital", "Kambu Sub County Hospital", "Tawa Sub County Hospial"))
+  
+
+#### reclassifying the motorised travel time to all health facilities in Makueni raster file ####
+
+access_pep_facilities1 <- raster(here("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/data/kenya/rasters/travel_times/pep_facilities_access_raster1.tif")) #importing the raster files
+
+# creating a reclassification matrix
+reclass <- c(0, 30, 1, # within 30 minutes
+             30, 60, 2, # within 60 minutes
+             60, 90, 3, # within 90 minutes
+             90, 120, 4, # within 120 minutes
+             120, Inf, 5) # greater than 120 minutes
+
+reclass.mat <- matrix(reclass,
+                      ncol = 3,
+                      byrow = TRUE)
+
+# reclassifying access_level6_facilities raster
+pep.surgperm.cat <- reclassify(access_pep_facilities1,
+                                 reclass.mat,
+                                 include.lowest = TRUE) # this includes a travel time of zero in the lowest group
+ 
+# convert raster to polygon and dissolve
+pep.surgperm.cat.poly.diss <- rasterToPolygons(pep.surgperm.cat, dissolve=TRUE)
+ 
+pep.surgperm.cat.poly.diss <- st_as_sf(pep.surgperm.cat.poly.diss, crs = 4326)
+ 
+colnames(pep.surgperm.cat.poly.diss)[colnames(pep.surgperm.cat.poly.diss) == "layer"] ="pep_facilities_access_raster1"
+ 
+#### 1.5 speeding up st_intersection using a function & zonal statistics ####
+# This function was copied from this thread: https://github.com/r-spatial/sf/issues/801
+ 
+st_intersection_faster <- function(x,y){
+  #faster replacement for st_intersection(x, y,...)
+  y_subset <-
+    st_intersects(x, y) %>%
+    unlist() %>%
+    unique() %>%
+    sort() %>%
+    {y[.,]}
+  st_intersection(x, y_subset)
+}
+ 
+pep.surgperm.cat.poly.diss.adm1 <- st_intersection_faster(pep.surgperm.cat.poly.diss, adm1)
+ 
+pep.surgperm.cat.poly.diss.adm1 <- pep.surgperm.cat.poly.diss.adm1 %>%
+  mutate(pop =exact_extract(popsum, pep.surgperm.cat.poly.diss.adm1,
+                            'sum'))
+ 
+#### 1.6 summarise motorised travel time to health facilities in Kenya at the national and county levels ####
+ 
+#### 1.6.1 at the adm0 level ####
+ 
+pep_pop_pct_by_access_at_adm0 <- as.data.frame(pep.surgperm.cat.poly.diss.adm1[, c("pep_facilities_access_raster1", "pop")]) %>%
+  group_by(pep_facilities_access_raster1) %>%
+  summarise_at(c("pop"), sum,
+               na.rm = TRUE) %>%
+  #ungroup() %>%
+  mutate(travel_minutes = case_when(
+    pep_facilities_access_raster1 == 1 ~ "≤30",
+    pep_facilities_access_raster1 == 2 ~ "31-60",
+    pep_facilities_access_raster1 == 3 ~ "61-90",
+    pep_facilities_access_raster1 == 4 ~ "91-120",
+    pep_facilities_access_raster1 == 5 ~ ">120")) %>%
+  filter(!is.na(travel_minutes))|>
+  mutate(pop = round(pop, digits = 0),
+         pop_pct0 = round((pop / sum(pop) * 100), digits = 2),
+         pop_pct = round((pop / sum(pop) * 100), digits = 1)) %>%
+  mutate(transport = "motor",
+         service = "accessibility",
+         country = "Kenya")
+ 
+pep_pop_pct_by_access_at_adm0 <- pep_pop_pct_by_access_at_adm0[, c("country", "transport", "service", "travel_minutes", "pep_facilities_access_raster1", "pop","pop_pct0","pop_pct")]
+
+# plotting the graphs
+
+pep_pop_pct_by_access_n_adm1 <- as.data.frame(pep.surgperm.cat.poly.diss.adm1[, c("pep_facilities_access_raster1", "NAME_1", "pop")]) %>%
+  dplyr::group_by(NAME_1, pep_facilities_access_raster1) %>%
+  mutate(adm1_pop = round(sum(pop), digits = 0)) %>%
+  ungroup() %>%
+  mutate(travel_minutes = case_when(
+    pep_facilities_access_raster1 == 1 ~ "≤30",
+    pep_facilities_access_raster1 == 2 ~ "31-60",
+    pep_facilities_access_raster1 == 3 ~ "61-90",
+    pep_facilities_access_raster1 == 4 ~ "91-120",
+    pep_facilities_access_raster1 == 5 ~ ">120")) %>%
+  mutate(pop_1hr = round(pop, digits = 0),
+         pop_pct_1hr = round((pop / adm1_pop * 100), digits = 1)) %>%
+  filter(pep_facilities_access_raster1 <= 2) %>%
+  group_by(NAME_1) %>%
+  mutate(pop_2hr = round(sum(pop), digits = 0),
+         pop_pct_2hr = round((pop_2hr / adm1_pop * 100), digits = 1),
+         rid = row_number(NAME_1),
+         le_1hour = paste0(pop_1hr, " (", (paste0(sprintf("%1.1f", pop_pct_1hr))),"%)"),
+         le_2hour = paste0(pop_2hr, " (", (paste0(sprintf("%1.1f", pop_pct_2hr))),"%)"),
+         Transport = "motor",
+         Service = "accessibility health facilities",
+         Country = "Kenya") %>%
+  #filter(rid == 1) %>%
+  ungroup()
+ 
+ 
+#### 2. PLOT ####
+#### 2.1 access map ####
+# raster to data frame
+access_pep_facilities.df <- raster::as.data.frame(access_pep_facilities1, xy=TRUE)
+
+access_pep_facilities.df <- na.omit(access_pep_facilities.df)
+ 
+# create fixed interval
+fix.brks <- classIntervals(access_pep_facilities.df$pep_facilities_access_raster1, n = 5, style="fixed",
+                           fixedBreaks=c(-0.1, 30, 60, 90, 120, Inf), # used '-0.1' to make sure 0 is included
+                           intervalClosure="right")
+ 
+access_pep_facilities.df <- access_pep_facilities.df %>%
+  mutate(pop_cat = cut(pep_facilities_access_raster1, fix.brks$brks))
+ 
+# plotting
+pep_map <- ggplot() +
+  geom_sf(data = adm0, fill = "#d9d9d9", alpha = 1,
+          show.legend = NA, color = NA) +
+  geom_raster(data = access_pep_facilities.df,
+              aes(x=x, y=y, fill = factor(pop_cat)),
+              interpolate = FALSE, show.legend = NA) +
+  scale_fill_manual(
+    guide = "none",
+    values = c("#f7fbff","#c6dbef", "#6baed6", "#2171b5", "#08306b"),
+    na.value = "#969696") +
+  # add adm1 and adm0 outlines
+  geom_sf(data = adm1, fill = NA, lwd = 0.1, colour="#000000", show.legend = NA) +
+  geom_sf(data = adm0, fill = NA, lwd = 0.1, colour="#000000", show.legend = NA) +
+  # add north arrow and scale
+  annotation_scale(location = "bl", width_hint = 0.25,
+                   pad_x = unit(0.26, "in"), pad_y = unit(0.4, "in"),
+                   height = unit(0.15, "cm")) +
+  annotation_north_arrow(location = "bl", which_north = "true",
+                         pad_x = unit(0.57, "in"), pad_y = unit(0.6, "in"),
+                         height = unit(0.9, "cm"), width = unit(0.81, "cm"),
+                         style = north_arrow_fancy_orienteering(text_size = 10)) +
+  # add facility as point
+  geom_sf(data = pep_health_facilities, aes(geometry = geometry, col="kph_lvl"),
+          size = 3.5, shape = "+") +
+  scale_colour_manual(name = " ", values = "red",
+                      labels =c("PEP stocking facility"),
+                      guide = guide_legend())+
+  theme(legend.position = c(1.11, 0.75),
+        legend.key.size = unit(0.4, 'cm'), #change legend key size
+        legend.key.height = unit(0.4, 'cm'), #change legend key height
+        legend.key.width = unit(0.4, 'cm'), #change legend key width
+        legend.text = element_text(size=10.0,face="bold"), #change legend text font size
+        legend.spacing.y = unit(0, "pt")) +
+  theme(plot.margin = margin(t = 0,  # Top margin
+                             r = 20,  # Right margin
+                             b = 0,  # Bottom margin
+                             l = 0),
+        panel.background = element_blank(),
+        axis.line = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title = element_blank(),
+        panel.grid.major = element_blank(), # optional - remove gridlines
+        panel.grid.minor = element_blank(), # optional - remove gridlines
+        plot.background = element_rect(fill='transparent', color=NA),
+        legend.background = element_rect(fill='transparent'),
+        legend.box.background = element_rect(fill='transparent', color=NA),
+        legend.key=element_rect(fill="transparent"), # remove grey background color of the key
+        legend.margin =  margin(0,0,0,0,unit="pt")) # removing the space between the keys
+ 
+pep_map
+ 
+#### 2.2 barchart legend using ggplot ####
+#### 2.2.1 process data ####
+hist_factor = 2
+legend_w = 24
+vline_w = 0.2
+ 
+bar_adm0 <- pep_pop_pct_by_access_at_adm0 %>%
+  mutate(pop_pct1 = pop_pct0 + legend_w,
+         alpha = 1,
+         label=ifelse(pep_facilities_access_raster1 != 5, (paste0(sprintf("%1.1f", pop_pct), "%")), "45.1%"))
+ 
+#### 2.2.2 barchart legend  ####
+ 
+barchart_plot <- ggplot(bar_adm0, aes(x = reorder(travel_minutes,-pep_facilities_access_raster1),
+                                y = pop_pct1/hist_factor,
+                                fill = as.factor(pep_facilities_access_raster1), alpha=factor(alpha))) +
+  coord_flip() +
+  scale_fill_manual(
+    values = c("#f7fbff","#c6dbef", "#6baed6", "#2171b5", "#08306b"),
+    na.value = "#d9d9d9") +
+  scale_alpha_manual(values = c("1" = 1),
+                     guide = "none") +
+  geom_bar(stat = 'identity',  width = 0.8,
+           color="#d9d9d9", linewidth = 0.15, na.rm = TRUE) +
+  geom_hline(aes(yintercept=legend_w/hist_factor),col = "white", linewidth = 0.55) +
+  geom_text(aes(label=label,
+                y = 25),
+            size = 3.5,
+            position=position_dodge(width=1.0), vjust= 0.5,
+            hjust= 0, fontface = "bold") +
+  scale_colour_manual(values=c("#000000", "#de77ae")) +
+  theme_bw() +
+  labs(title="Travel minutes to nearest facility given population",
+    x = "", y = "") +
+  theme_classic() +
+  theme(plot.title = element_text(size=11, colour="#000000", hjust = 0, vjust = 0),
+    axis.text.y = element_text(size=11, colour="#000000"),
+    panel.grid.minor = element_blank(),
+    panel.background = element_blank(),
+    axis.ticks=element_blank(),
+    axis.line = element_blank(),
+    axis.text.x = element_blank(),
+    legend.position = "none",
+    plot.margin = margin(t = 5,  # Top margin
+                         r = 0,  # Right margin
+                         b = 0,  # Bottom margin
+                         l = 10)) +
+  theme(panel.background = element_rect(fill='transparent', color=NA),
+        plot.background = element_rect(fill='transparent', color=NA),
+        legend.background = element_rect(fill='transparent'),
+        legend.box.background = element_rect(fill='transparent'),
+        aspect.ratio = 1/1.2)
+ 
+barchart_plot
+ 
+#### 2.3 combined plot ####
+# set map path and name
+combined <- here("Makueni/maps",
+               "walking to PEP facilities Makueni.png")
+ 
+combined
+ 
+combined_plots4 <- cowplot::ggdraw() +
+  draw_plot(pep_map, height = 1, width = 0.8) +
+  expand_limits(x = 0.5, y = 0) +
+  draw_plot(barchart_plot, x = 0.59, y = 0.39, hjust = 0, vjust = 0,
+            width = 0.32, height = 0.32) +
+  theme(plot.margin = margin(t=0.1, l= -0.1, b=0.1, r=0.6, "cm"),
+    plot.background = element_rect(fill='transparent', color=NA))
+ 
+ggsave(plot = combined_plots4, file = combined,
+       type = "cairo_MN-png",
+       bg = "white",
+       width = 23.5, height = 16, units = "cm", dpi = 600)
+
+figure <-ggarrange(combined_plots3, combined_plots4,
+    labels = c("A", "B"), nrow  = 1, font.label=list(color="black",size=25,  align = "hv"))
+
+figure
+
+ggsave("combined_walking.png",figure, width = 23, height = 10, units = "in", bg = "white")
+
+```
+
+### contact tracing data - driving
+
+```{r}
+
+contact_tracing <- read.csv("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/Makueni/human_tracing.csv") %>%
+  clean_names() %>%
+  rename_at(vars(starts_with("form_")), funs(str_remove(.,"form_"))) %>%
+  separate(village_coordinates, sep = " ", c("Latitude", "Longitude", "Elevation")) %>%
+  dplyr::select(-c(number, formid,link, trc_date,ptnt_nm, kin, completed_time, started_time, received_on, hq_user, vctm_age, working_phone_number_of_the_victim_or_next_of_kin, vctm_sex, bt_dt, bt_st, bt_ctgry, btng_anml, if_other,wht_prvkd_bt, other, btng_anml_dtls, btng_anml_age,btng_anml_sex,nsrng_stts,anml_ownrshp,anml_ownr_cntct,vccntn_stts,vccntn_vdnc,if_ther,vccntn_yr,sb_cnty_btn,bt_ward,vllg_btn,pple_xpsd,nmbr_xpsd,life_stts,anml_signs,ws_anml_ownr_cntctd,anml_avlbl_fr_in_hm_qrntn,ownr_cmplnc_wth_vrbl_nstrctns_fr_qrntn,username,sbcnty_nm1,ward1,if_other1,bite_occured_county,sb_cnty_btn1,bt_ward1,county_of_the_patient)) %>%
+  filter(!Latitude %in% "---") %>%
+  clean_names() %>%
+  filter(!ward %in% "---") %>%
+  dplyr::rename(place_from = vllg_nm,
+                subcounty = sbcnty_nm,
+                ID = auto_uid,
+                latitude_from = latitude,
+                longitude_from = longitude) %>%
+  mutate(latitude_from = as.numeric(latitude_from)) %>%
+  mutate(longitude_from = as.numeric(longitude_from)) %>%
+  mutate (place_to = "Makueni County Referral Hospital") %>%
+  mutate(latitude_to = -1.78363) %>%
+  mutate(longitude_to = 37.62843)
+
+ct_2017_18 <- read_xlsx("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/Makueni/Makuenimerged30092018.xlsx", sheet = "BittenVictim") %>%
+  clean_names() %>%
+  dplyr::select(sub_cnty, ward, latitude_degrees, longitude_degrees,altitude_meters, village, biter_id, fclty_name) %>%
+  mutate(village = str_to_sentence(village)) %>%
+  dplyr::rename(place_from = village,
+                subcounty = sub_cnty,
+                ID = biter_id,
+                latitude_from = latitude_degrees,
+                longitude_from = longitude_degrees,
+                elevation = altitude_meters,
+                place_to = fclty_name)%>%
+  mutate(place_to = recode(place_to, 
+                       "AIC kalamba Heath center." = "Kalamba (AIC) Dispensary",
+                       "AIC Kalamba dispensary" = "Kalamba (AIC) Dispensary",
+                       "Bethany health services." = "Bethany health services",
+                       "Bosnia disp." = "Bosnia Dispensary",
+                       "Bosnia dispensary" = "Bosnia Dispensary",
+                       "Bosnia dispensary." = "Bosnia Dispensary",
+                      "County referral hospital" = "Makueni County Referral Hospital",
+                      "County referral hospital." = "Makueni County Referral Hospital",
+                      "makueni" = "Makueni County Referral Hospital",
+                      "Makueni C R H." = "Makueni County Referral Hospital",
+                      "Makueni county referral" = "Makueni County Referral Hospital",
+                      "Makueni county referral hispital." = "Makueni County Referral Hospital",
+                      "Makueni county referral hosp." = "Makueni County Referral Hospital",
+                      "makueni county referral hospital" = "Makueni County Referral Hospital",
+                      "Makueni county referral hospital" = "Makueni County Referral Hospital",
+                      "Makueni County referral hospital" = "Makueni County Referral Hospital",
+                      "Makueni county referral hospital." = "Makueni County Referral Hospital",
+                      "Makueni county Referral hospital." = "Makueni County Referral Hospital",
+                      "makueni county refferal hospital" = "Makueni County Referral Hospital",
+                      "makueni County refferal hospital" = "Makueni County Referral Hospital",
+                      "Makueni county refferal hospital" = "Makueni County Referral Hospital",
+                      "Makueni County refferal hospital" = "Makueni County Referral Hospital",
+                      "Makueni county refferral hispital" = "Makueni County Referral Hospital",
+                      "Makueni county refferral hospital" = "Makueni County Referral Hospital",
+                      "Makueni county refferral hospital." = "Makueni County Referral Hospital",
+                      "Makueni county rrferal hospital" = "Makueni County Referral Hospital",
+                      "Makueni referral hospital" = "Makueni County Referral Hospital",
+                      "Mcrh" = "Makueni County Referral Hospital",
+                      "MCRH" = "Makueni County Referral Hospital",
+                      "MCRH." = "Makueni County Referral Hospital",
+                      "Mkn.C R H" = "Makueni County Referral Hospital",
+                      "Mkn.CRH." = "Makueni County Referral Hospital",
+                      "Mkn.C R H." = "Makueni County Referral Hospital",
+                      "ilatu dispensary" = "Ilatu Health Centre (Makindu)",
+                      "Ilatu dispensary" = "Ilatu Health Centre (Makindu)",
+                      "Kalie dispensary" = "Kalii Dispensary",
+                      "Kalii" = "Kalii Dispensary",
+                      "Kalii dispensary" = "Kalii Dispensary",
+                      "kalulilini" = "Kalulini Health Centre (Kibwezi)",
+                      "Kalulini health center" = "Kalulini Health Centre (Kibwezi)",
+                      "Kalulini health centre" = "Kalulini Health Centre (Kibwezi)",
+                      "kalulini Heath center" = "Kalulini Health Centre (Kibwezi)",
+                      "kathonzweni health center" = "Kathonzweni Health Centre",
+                      "Kathonzweni health center" = "Kathonzweni Health Centre",
+                      "Kathonzweni health center." = "Kathonzweni Health Centre",
+                      "kathyaka dispensary" = "Kathyaka Health Centre",
+                      "Kathyaka dispensary" = "Kathyaka Health Centre",
+                      "Kibwezi East  subcounty hospital" = "Kibwezi Sub County Hospital",
+                      "Kibwezi east sub county hospital" = "Kibwezi Sub County Hospital",
+                      "Kibwezi East sub county hospital" = "Kibwezi Sub County Hospital",
+                      "Kibwezi East subcounty hospital" = "Kibwezi Sub County Hospital",
+                      "Kibwezi East subcounty hospital." = "Kibwezi Sub County Hospital",
+                      "kibwezi sub county hospital" = "Kibwezi Sub County Hospital",
+                      "Kibwezi sub county hospital" = "Kibwezi Sub County Hospital",
+                      "kikumini dispensary" = "Kikumini Dispensary (Makueni)",
+                      "Kikumini dispensary" = "Kikumini Dispensary (Makueni)",
+                      "kikumini health center" = "Kikumini Health Centre",
+                      "Kikumini Health center" = "Kikumini Health Centre",
+                      "Kikumini health centre" = "Kikumini Health Centre",
+                      "Makindu" = "Makindu Sub County Hospital",
+                      "Makindu  subcounty  hospital" = "Makindu Sub County Hospital",
+                      "Makindu  subcounty hospital" = "Makindu Sub County Hospital",
+                      "Makindu Catholic dispensary" = "Makindu Sub County Hospital",
+                      "Makindu sub county" = "Makindu Sub County Hospital",
+                      "makindu sub county hospital" = "Makindu Sub County Hospital",
+                      "makindu Sub county hospital" = "Makindu Sub County Hospital",
+                      "Makindu sub county hospital" = "Makindu Sub County Hospital",
+                      "Makindu Sub Sounty Hospital" = "Makindu Sub County Hospital",
+                      "Makindu sub county hospital." = "Makindu Sub County Hospital",
+                      "Makindu subcounty hospital" = "Makindu Sub County Hospital",
+                      "Makindu subcounty hospital." = "Makindu Sub County Hospital",
+                      "Matiliku sub county hospital" = "Matiliku Sub County Hospital",
+                      "matiliku Sub county hospital." = "Matiliku Sub County Hospital",
+                      "Mbitini dispensary" = "Mbitini Dispensary",
+                      "Mbitini dispensary." = "Mbitini Dispensary",
+                      "Mbooni s.c.hosp." = "Mbooni Sub County Hospital",
+                      "Mbooni sub county hospital" = "Mbooni Sub County Hospital",
+                      "Mbumbuni sub.county hospital" = "Mbooni Sub County Hospital",
+                      "Mkn.C R H." = "Makueni County Referral Hospital",
+                      "Mutyambua sub county hispital" = "Mutyambua hospital",
+                      "Mutyambua sub county hospital." = "Mutyambua hospital",
+                      "Mutyambua sub county hospitals" = "Mutyambua hospital",
+                      "mweini Dispensary" = "Mweini Dispensary",
+                      "Mweini dispensary" = "Mweini Dispensary",
+                      "Nzeeni dispensary" = "Nzeeni Dispensary",
+                      "Nzeeni health center" = "Nzeeni Dispensary",
+                      "ponya nursing home" = "Ponya Medical Clinic", 
+                      "Ponya Nursing Home" = "Ponya Medical Clinic",
+                      "sink temple hospital" = "Sikh Hospital",
+                      "Sultan Hamud sub. county hospital." = "Sultan Hamud Sub County Hospital",
+                      "Sultan Sub County hospital" = "Sultan Hamud Sub County Hospital",
+                      "Tutini" = "Tutini Dispensary",
+                      "Tutini dispensary" = "Tutini Dispensary",
+                      "Bethany health services" = "Bethany Health Services Clinic",
+                      "Emali model health center" = "Emali model health Centre",
+                      "Gk prison" = "Makueni GK Prison Dispensary",
+                      "Highway clinic" = "Eunik Highway Medical Clinic",
+                      "Iiani dispensary" = "IIANI DISPENSARY",
+                      "Katangi dispensary" = "Katangi dispensary",
+                      "Kathonweni s.c.hospital" = "Kathonzweni Health Centre",
+                      "Kathonzweni" = "Kathonzweni Health Centre",
+                      "Kathonzweni Health Centre" = "Kathonzweni Health Centre",
+                      "Kaunguni dispensary" = "Kaunguni Health Centre",
+                      "Kiboko dispensary" = "Kiboko Dispensary (Makindu)",
+                      "Kilili health centre" = "Kilili Health Centre",
+                      "Kilili Health centre." = "Kilili Health Centre",
+                      "kisayani dispensary" = "Kisayani  Health centre",
+                      "Kisayani medical clinic" = "Kisayani  Health centre",
+                      "Kitise" = "Kitise Health Centre",
+                      "Kitise dispensary" = "Kitise Health Centre",
+                      "kitise health center" = "Kitise Health Centre",
+                      "Kitise medical clinic" = "Kitise Health Centre",
+                      "Kitise Medical clinic." = "Kitise Health Centre",
+                      "kwakakulu dispensary" = "kwa Kakulu Dispensary (Emali)",
+                      "Kwakotoe" = "Kwa-kotoe Dispensary",
+                      "Masongaleni dispensary" = "Masongaleni Health Centre",
+                      "Matiku dispensary" = "Matiliku Catholic Dispensary",
+                      "Kitise" = "Kitise Health Centre",
+                      "Mavindini Health center" = "Mavindini Health Centre",
+                      "Mbenuu health centre" = "Mbenuu Health Centre",
+                      "Muusini disp." = "Muusini Dispensary (Makueni)",
+                      "Mwania disp." = "Mwania (Chandaria) Dispensary",
+                      "mwanyani dispensary" = "Mwanyani Health Centre",
+                      "ndunguni dispensary" = "Ndunguni dispensary",
+                      "Tawa sub county hospital" = "Tawa Sub County Hospial",
+                      "Tumaini clinic" = "Tumaini Health Services (Makindu)",
+                      "Vololo dispensary" = "Vololo Health Centre",
+                      "Vumilia clinic" = "Vumilia Medical Clinic",
+                      "Yikivumbu dispensary" = "Yikivumbu Dispensary",
+                      "Yimwaa dispensary." = "Yimwaa Dispensary",
+                      "Bethany health services" = "Bethany Health Services Clinic"
+                      )) %>%
+  filter(!place_to %in% NA) %>% #%>% #filter out 46 NA values
+  separate(place_to, sep = " and ", c("place_to","name2"))
+
+separate(village_coordinates, sep = " ", c("Latitude", "Longitude", "Elevation"))
+
+#write_csv(contact_tracing , "contact_tracing_clean.csv")
+
+# coordinates(contact_tracing) <- ~longitude + latitude
+# 
+# proj4string(contact_tracing) <- CRS("+init=epsg:4326")
+# 
+# contact_tracing <- spTransform(contact_tracing,CRS("+proj=longlat +datum=WGS84 +no_defs"))
+# 
+# sp::points2grid(contact_tracing, tolerance = 0.9)
+# 
+# #extent <- ("37.141288758,38.519416809,-2.992213250,-1.515167237 [EPSG:4326]")
+# 
+# r <- raster(contact_tracing)
+# r <- projectRaster(r, crs=4326)
+
+```
+
+# buiding the main function
+
+```{r}
+
+# Function to calculate distance 
+calculate_distance <- function(lat1, lon1, lat2, lon2) {
+  coords1 <- c(lon1, lat1)
+  coords2 <- c(lon2, lat2)
+  distance <- distVincentySphere(coords1, coords2)
+  return(distance)
+}
+
+calculate_time <- function(distance, speed) {
+  time <- distance / speed
+  return(time)
+}
+
+# Function to calculate time based on distance and speed
+origins <- data.frame(lat = c(contact_tracing$latitude_from), 
+                    lon = c(contact_tracing$longitude_from))
+
+# Makueni County Referral Hospital (destination) coordinates
+destination <- c(-1.78363, 37.62843)
+
+#assume driving with a constant speed of 50
+speed <- 50
+
+# Create an empty data frame to store the results
+results <- data.frame(
+  Distance_meters = numeric(0),
+  Distance_kilometers = numeric(0),
+  Time_seconds = numeric(0),
+  Time_minutes = numeric(0)
+)
+
+# Calculate time and distance for each starting point
+for (i in 1:nrow(contact_tracing)) {
+  lat1 <- contact_tracing$latitude_from[i]
+  lon1 <- contact_tracing$longitude_from[i]
+
+  # Calculate distance in meters
+  distance <- calculate_distance(lat1, lon1, contact_tracing$latitude_to[1], contact_tracing$longitude_to[2])
+  cat("Distance from starting point", i, "to destination:", distance, "meters\n")
+
+  # Convert distance to kilometers
+  distance_km <- distance / 1000
+  cat("Distance from starting point", i, "to destination:", distance_km, "kilometers\n")
+
+  # Calculate time in hours
+  time_seconds <- calculate_time(distance, speed)
+  cat("Time to travel from starting point", i, "to destination:", time_hours, "hours\n")
+
+  # Convert time to minutes
+  time_minutes <- time_seconds / 60
+  cat("Time to travel from starting point", i, "to destination:", time_minutes, "minutes\n\n")
+  
+  # Append results to the data frame
+  results <- rbind(results, data.frame(
+    Distance_meters = distance,
+    Distance_kilometers = distance_km,
+    Time_seconds = time_seconds,
+    Time_minutes = time_minutes
+  ))
+}
+
+print(results)
+
+```

@@ -1,0 +1,278 @@
+---
+title: "Catchment - Makueni"
+author: "The Center for Epidemiological Modelling and Analysis - University of Nairobi"
+date: "2023-12-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+pacman::p_load(
+  dplyr,
+  plyr,
+  terra,
+  sf,
+  rgdal,
+  doParallel,
+  foreach,
+  snow,
+  raster,
+  osmextract,
+  tidyverse,
+  gdalUtils,
+  readxl,
+  gdistance,
+  iterators,
+  data.table,
+  rmapshaper,
+  fasterize,
+  janitor
+  )
+
+```
+
+
+###landcover
+```{r}
+
+landcover <- rast("PROBAV_LC100_global_v3.0.1_2019-nrt_Discrete-Classification-map_EPSG-4326.tif")
+admin_mkn <- st_read("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/gadm41_KEN_shp/makueni_county.shp") 
+projections <- read.csv("raw/projections/projections.csv")
+
+# fetch projection data from EPSG
+epsg <- make_EPSG()
+projections <- left_join(projections, epsg, by = c("epsg_code"  ="code"))
+
+# create landcover for each country in ssa
+admin <- left_join(admin_mkn, projections, by = c("GID_0" = "country_code")) # merge the projections to the spatial data
+file_name <- admin$GID_0 # to integrate country name in saving step later
+
+# apply the  function
+system.time(for(i in 1:nrow(admin)) {
+  l = landcover
+  a = admin %>% 
+    filter(GID_0 == file_name[i])
+  a = vect(a)
+  r = terra::crop(l, a)
+  m = terra::mask(r, a)
+  p = terra::project(m, admin$prj4[i], method = "near")
+  values(p)[values(p) == 0] <- NA
+  writeRaster(p, paste0("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/Makueni/processed data/Landcover/landcover_", file_name[i], ".tif"), overwrite=T)
+}) 
+
+```
+
+### DEM
+
+```{r}
+
+srtm <- rast("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/Makueni/processed data/rDEM/mosaic_srtm_mkn.tif")
+
+admin_mkn <- st_read("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/gadm41_KEN_shp/makueni_county.shp")
+
+# fetch projection data from EPSG
+epsg <- make_EPSG()
+projections <- left_join(projections, epsg, by = c("epsg_code"  ="code"))
+
+# only subset country names that have not been processed yet
+# create DEM for each country in ssa
+admin <- left_join(admin_mkn, projections, by = c("GID_0" = "country_code")) # merge the projections to the spatial data
+file_name <- admin$GID_0 # to integrate country name in saving step later
+
+# makueni DEM
+
+mkn_DEM <- rast("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/Makueni/processed data/rDEM/DEM_Mkn.tif")
+
+```
+
+### Roads
+
+```{r}
+
+roads <- st_read("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/Makueni/processed data/roads/roads_mkn.shp")
+
+```
+
+
+### Hydropolys
+
+```{r}
+
+waterways <- st_read("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/Makueni/processed data/waterways/waterways.shp")
+
+```
+
+
+###merge landcover
+
+```{r}
+
+landcover <- paste("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/Makueni/processed data/Landcover/landcover_KEN_extent.tif")
+
+landcover_ <-raster(landcover)
+plot(landcover_, axes=TRUE)
+
+roads_ <- roads %>%
+  mutate(label = recode(highway, 
+                        "trunk" ='1001' ,
+                        "trunk_link"= '1002' ,
+                        "primary" = '1003' ,
+                        "secondary" = '1004' ,
+                        "secondary_link" = '1005',
+                        "tertiary" = '1006' ,
+                        "residential" = '1007',
+                        "service" = '1008' ,
+                        "track" = '1009' ,
+                        "pedestrian" = '1010' ,
+                        "path" = '1011' ,
+                        "footway" = '1012',
+                        "unclassified" = '1013',
+                        "living_street" = '1014'))
+
+roads_$label <- as.integer(roads_$label)
+
+#write_sf(roads_,"/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/Makueni/processed data/roads/roads_reclassified.shp")
+
+roads_raster <- raster::rasterize(roads_, landcover_)
+plot(roads_raster, axes=TRUE)
+
+waterlines <- st_read("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/Makueni/processed data/waterlines/waterlines_mkn.shp")
+
+waterlines_raster <- raster::rasterize(waterlines, landcover_)
+plot(waterlines_raster, axes=TRUE)
+
+#writeRaster(waterlines_raster, "/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/Makueni/processed data/waterlines/raster_waterlines.tif", format = "GTiff")
+
+waterpolygons_raster <- raster::rasterize(waterways, landcover_)
+plot(waterpolygons_raster, axes=TRUE)
+
+#writeRaster(waterlines_raster, "/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/Makueni/processed data/waterways/raster_waterways.tif", format = "GTiff")
+
+raster_stack <- raster::merge(roads_raster, waterlines_raster, waterpolygons_raster, landcover_)
+plot(raster_stack)
+
+#writeRaster(raster_stack, "/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/Makueni/processed data/merged landcover/merged.tif", format = "GTiff")
+
+landcover_own <- raster("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/Makueni/processed data/merged landcover/merged.tif")
+
+QGIS_merged_landcover <- raster("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/Makueni/processed data/merged landcover/merged_QGIS.tif")
+
+plot(QGIS_merged_landcover)
+plot(landcover_own)
+
+```
+
+## Friction layer
+```{r}
+
+# read in the datasets required for this script
+# the administrative boundaries can be adapted to personal requirements. Here we used the GADM boundaries:
+# available from: https://gadm.org/data.html 
+
+admin_mkn <- st_read("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/gadm41_KEN_shp/makueni_county.shp")
+
+travelspeeds <- read_xlsx("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/Makueni/travel_scenario/travel speeds.xlsx", sheet = "Supplementary table 1", range = "R2C1:R11C6") # speeds coming from Weiss et al (2020)
+
+landcoverspeeds <- read_xlsx("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/Makueni/travel_scenario/tScenario__scenario_mkn.xlsx", sheet = "Sheet1") # table containing the speeds for the different land cover classes 
+
+landcover <- raster("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/Makueni/processed data/merged landcover/merged_QGIS.tif") 
+landcover1 <- raster("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/Makueni/processed data/merged landcover/merged.tif")
+
+
+# subset the country names, road classes, and land cover classes
+countries <- admin_mkn$GID_0
+road_classes <- c(1001:1014)
+landcover_classes <- landcoverspeeds$class
+
+countries <- rep(countries, each = length(road_classes))
+road_classes <- rep(road_classes, length(unique(countries)))
+
+
+data_roads <- data.frame(country = countries, road_class = road_classes) %>%
+  mutate(osm_class = recode(road_class,  
+                        '1001' = "trunk",
+                        '1002' = "trunk_link",
+                        '1003' = "primary",
+                        '1004' = "secondary",
+                        '1005' = "secondary_link",
+                        '1006' = "tertiary",
+                        '1007' = "residential",
+                        '1008' = "service",
+                        '1009' = "track",
+                        '1010' = "pedestrian",
+                        '1011' = "path",
+                        '1012' = "footway",
+                        '1013' = "unclassified",
+                        '1014' = "living_street")) %>% # reclassify the different road classes
+  left_join(., travelspeeds, by = c("country" = "ISO3", "osm_class" = "OSM Class")) %>% # merge the empty table with the Weiss et al table
+  mutate(weiss_class = ifelse(is.na(`OSM_speed (km/h)`) == TRUE, "other", osm_class))  %>% # if Weiss table does not have a speed for a certain category, assign the class "other" to a new column
+  dplyr::select(-c(GAUL, Country_name, OSM_tag_name, `OSM_speed (km/h)`))%>% # only keep important columns
+  left_join(., travelspeeds, by = c("country" = "ISO3", "weiss_class" = "OSM Class")) %>% # join travel speeds of weiss again, including the "other" category
+  mutate(conversion = ((60*1)/(`OSM_speed (km/h)`*1000)))%>%  # the input of the accessibility analysis, requires a time cost of traversing one cell per meter. For 100m we change the first 1 to 100 for conversion.
+  dplyr::select(c(country, Country_name, osm_class, weiss_class, road_class, `OSM_speed (km/h)`, conversion)) 
+
+# create data frame for land cover classes
+countries <- admin_mkn$GID_0
+countries <- rep(countries, each = length(landcover_classes))
+landcover_classes <- rep(landcover_classes, length(unique(countries)))
+
+
+data_landcover <- data.frame(country = countries, landcover_class = landcover_classes) %>%
+  mutate(landcover_label = recode(landcover_class, 
+            '0'   = "unknown",
+            '20'  = "shrubs",
+            '30'  = "herbaceous vegetation",
+            '40'  = "cultivated/agriculture",
+            '50'  = "urban/built up",
+            '60'  = "bare/sparse vegetation",
+            '70'  = "snow and ice",
+            '80'  = "permanent waterbodies",
+            '81'  = "unclassified",
+            '90'  = "herbaceous wetland",
+            '100' = "moss and lichen",
+            '111' = "closed forest, evergreen needle leaf",
+            '112' = "closed forest, evergreen broad leaf",
+            '113' = "closed forest, deciduous needle leaf",
+            '114' = "closed forest, deciduous broad leaf",
+            '115' = "closed forest, mixed",
+            '116' = "closed forest, not matching other definitions",
+            '121' = "open forest, evergreen needle leaf",
+            '122' = "open forest, evergreen broad leaf",
+            '123' = "open forest, deciduous needle leaf",
+            '124' = "open forest, deciduous needle leaf",
+            '125' = "open forest, mixed",
+            '126' = "open forest, not matching other definitions",
+            '200' = "oceans, seas")) %>%
+  left_join(., landcoverspeeds, by = c("landcover_class" = "class")) %>%
+  dplyr::select(-c(landcover_label)) %>%
+  mutate(conversion = ((60*1)/(speed*1000))) # for calculation of minutes per meter. for 100m we change the first 1 to 100 for conversion
+
+# split the full travel speed dataframe into separate list items
+speeds_roads <- data_roads %>%
+  dplyr::select(c(country, road_class, conversion)) %>%
+  dplyr::rename(class = "road_class")
+
+speeds_landcover <- data_landcover %>%
+  dplyr::select(c(country, landcover_class, conversion)) %>%
+  dplyr::rename(class = "landcover_class")
+
+speeds <- rbind(speeds_roads, speeds_landcover)
+
+speeds_list <- list()
+
+speeds_list <- split(speeds , f = speeds$country)
+
+
+landcover_merge <- rast(landcover)
+
+landcover_friction <- classify(landcover_merge, speeds_list)
+  writeRaster(landcover_friction, paste0("data/processed/rFriction_1m/friction_", countries[i], ".tif"), 
+              overwrite = T)})
+
+landcover_merge <- rast(landcover)
+
+landcover_friction <- terra::classify(landcover_merge, speeds)
+  
+writeRaster(landcover_friction,"/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/Makueni/processed data/rFriction_1m/friction_.tif", overwrite = T)
+
+```

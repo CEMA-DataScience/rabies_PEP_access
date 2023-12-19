@@ -1,0 +1,54 @@
+﻿country,label,class,speed
+KEN,trunk,1001,80
+KEN,trunk_link,1002,40.13513514
+KEN,primary,1003,80
+KEN,primary_link,1004,40.25641026
+KEN,motorway,1005,56.84210526
+KEN,motorway_link,1006,41.62162162
+KEN,secondary,1007,50
+KEN,secondary_link,1008,40.13513514
+KEN,tertiary,1009,50
+KEN,tertiary_link,1010,40.13513514
+KEN,road,1011,40.54054054
+KEN,raceway,1012,40.13513514
+KEN,residential,1013,40
+KEN,living_street,1014,40.13513514
+KEN,service,1015,30
+KEN,track,1016,30
+KEN,pedestrian,1017,38.51351351
+KEN,path,1018,40.13513514
+KEN,footway,1019,40.13513514
+KEN,piste,1020,40.13513514
+KEN,bridleway,1021,40.13513514
+KEN,cycleway,1022,40.13513514
+KEN,steps,1023,40.13513514
+KEN,unclassified,1024,40
+KEN,bridge,1025,40.13513514
+KEN,crossing,1026,30
+KEN,proposed,1027,30
+KEN,rest_area,1028,30
+KEN,services,1029,30
+KEN,unknown,0,1
+KEN,shrubs,20,3
+KEN,herbaceous vegetation,30,4.86
+KEN,cultivated/agriculture,40,3.24
+KEN,urban/built up,50,5
+KEN,bare/sparse vegetation,60,3
+KEN,snow and ice,70,1.62
+KEN,permanent waterbodies,80,1
+KEN,unclassified,81,1
+KEN,herbaceous wetland,90,2
+KEN,moss and lichen,100,4.86
+KEN,"closed forest, evergreen needle leaf",111,3.24
+KEN,"closed forest, evergreen broad leaf",112,1.62
+KEN,"closed forest, deciduous needle leaf",113,3.24
+KEN,"closed forest, deciduous broad leaf",114,4
+KEN,"closed forest, mixed",115,3.24
+KEN,"closed forest, not matching other definitions",116,3.24
+KEN,"open forest, evergreen needle leaf",121,3.24
+KEN,"open forest, evergreen broad leaf",122,1.62
+KEN,"open forest, deciduous needle leaf",123,3.24
+KEN,"open forest, deciduous needle leaf",124,4
+KEN,"open forest, mixed",125,3.24
+KEN,"open forest, not matching other definitions",126,3.24
+KEN,"oceans, seas",200,1

@@ -40,7 +40,8 @@ pacman::p_load(
   janitor,
   gmapsdistance,
   httr,
-  geosphere
+  geosphere,
+  RColorBrewer
   )
 
 ```
@@ -93,6 +94,8 @@ T2 <- gdistance::transition(own_friction, function(x) 1/mean(x), 8)
 T.GC1 <- gdistance::geoCorrection(T2) 
 
 makueni_shp <- st_read("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/Makueni/processed data/shapefile/makueni_county.shp")
+
+roads_shp <- st_read("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/Makueni/processed data/roads/roads_mkn.shp")
 
 ```
 
@@ -1342,9 +1345,36 @@ ggsave("combined_walking.png",figure, width = 23, height = 10, units = "in", bg 
 
 ```
 
-### contact tracing data - driving
+## makueni county road distribution
 
 ```{r}
+mycolors <- c(brewer.pal(name="Dark2", n = 8), brewer.pal(name="Paired", n = 6))
+
+mkn_roads <- ggplot()+
+  geom_sf(data=makueni_shp, aes(geometry=geometry), fill = "white")+
+  geom_sf(data=roads_shp, aes(geometry=geometry, col=highway))+
+  scale_color_manual(values = mycolors)+
+  labs(col = "road network (type)")+
+  theme(panel.background = element_rect(fill='transparent', color=NA),
+        plot.background = element_rect(fill='transparent', color=NA),
+        #legend.background = element_rect(fill='transparent'),
+        #legend.box.background = element_rect(fill='transparent')
+        )
+
+mkn_roads
+
+ggsave("road network.png",plot = mkn_roads,
+       bg="white",
+       path = "/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/Makueni/maps",
+       width = 23.5, height = 16, units = "cm", dpi = 600)
+```
+
+
+
+### contact tracing data
+
+```{r}
+#contact_tracing data 2020 to 2021
 
 contact_tracing <- read.csv("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/Makueni/human_tracing.csv") %>%
   clean_names() %>%
@@ -1365,6 +1395,8 @@ contact_tracing <- read.csv("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/D
   mutate(latitude_to = -1.78363) %>%
   mutate(longitude_to = 37.62843)
 
+
+#contact_tracing data 2017 to 2018
 ct_2017_18 <- read_xlsx("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/Makueni/Makuenimerged30092018.xlsx", sheet = "BittenVictim") %>%
   clean_names() %>%
   dplyr::select(sub_cnty, ward, latitude_degrees, longitude_degrees,altitude_meters, village, biter_id, fclty_name) %>%
@@ -1510,24 +1542,57 @@ ct_2017_18 <- read_xlsx("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datas
                       "Bethany health services" = "Bethany Health Services Clinic"
                       )) %>%
   filter(!place_to %in% NA) %>% #%>% #filter out 46 NA values
-  separate(place_to, sep = " and ", c("place_to","name2"))
+  separate(place_to, sep = " and ", c("place_to","name2")) %>%
+  mutate(name2 = recode(name2, 
+                       "Aic kalamba dispensary." = "Kalamba (AIC) Dispensary",
+                       "Mcrh." = "Makueni County Referral Hospital",
+                       "nairobi" = "Nairobi",
+                       "Ponya nursing home." = "Ponya Medical Clinic")) %>%
+  pivot_longer(cols = -c(1:7), names_to =  "place_to_2") %>%
+  #filter(! value %in% NA)
+  filter(!is.na(value)) %>%
+  dplyr::select(-place_to_2) %>%
+  dplyr::rename(place_to = value) %>%
+  separate(place_to, sep = ",", c("place_to","name2")) %>%
+  mutate(name2 = recode(name2, 
+                       " tawa" = "Tawa Sub County Hospial",
+                       "MCRH" = "Makueni County Referral Hospital")) %>%
+  pivot_longer(cols = -c(1:7), names_to =  "place_to_2") %>%
+  filter(!is.na(value)) %>%
+  dplyr::select(-place_to_2) %>%
+  dplyr::rename(place_to = value) %>%
+  separate(place_to, sep = "H/", c("place_to","name2")) %>%
+  mutate(name2 = recode(name2, 
+                       "C/MCRH" = "Makueni County Referral Hospital",
+                       ".c/MCRH" = "Makueni County Referral Hospital")) %>%
+  pivot_longer(cols = -c(1:7), names_to =  "place_to_2") %>%
+  filter(!is.na(value)) %>%
+  dplyr::select(-place_to_2) %>%
+  dplyr::rename(place_to = value) %>%
+  mutate(place_to = recode(place_to, 
+                       "Kathonzweni" = "Kathonzweni Health Centre",
+                       "kathonzweni " = "Kathonzweni Health Centre",
+                       "Kathonzweni " = "Kathonzweni Health Centre",
+                       "Kilili health centre" = "Kikumini Health Centre",
+                       "Makueni county referral hospital" = "Makueni County Referral Hospital"))
 
-separate(village_coordinates, sep = " ", c("Latitude", "Longitude", "Elevation"))
+health_facilities_coords <- health_facilities %>%
+  dplyr::select("latitud","longitd","offcl_n", "geometry")
 
-#write_csv(contact_tracing , "contact_tracing_clean.csv")
+### joining the two datasets with the facility data
 
-# coordinates(contact_tracing) <- ~longitude + latitude
-# 
-# proj4string(contact_tracing) <- CRS("+init=epsg:4326")
-# 
-# contact_tracing <- spTransform(contact_tracing,CRS("+proj=longlat +datum=WGS84 +no_defs"))
-# 
-# sp::points2grid(contact_tracing, tolerance = 0.9)
-# 
-# #extent <- ("37.141288758,38.519416809,-2.992213250,-1.515167237 [EPSG:4326]")
-# 
-# r <- raster(contact_tracing)
-# r <- projectRaster(r, crs=4326)
+ct_2017_18_coords <- left_join(ct_2017_18, health_facilities_coords, by = c("place_to" = "offcl_n")) %>% 
+  filter(!is.na(latitud)) %>%# filter out the 24 values that were NA
+  dplyr::select(-geometry) %>%
+  dplyr::rename(latitude_to = latitud,
+                longitude_to = longitd
+                )
+
+##combining the two contact tracing datasets
+ 
+CT_combined <- rbind(ct_2017_18_coords, contact_tracing) %>%
+  mutate(latitude_from = as.numeric(latitude_from)) %>%
+  mutate(longitude_from = as.numeric(longitude_from))
 
 ```
 
@@ -1535,67 +1600,71 @@ separate(village_coordinates, sep = " ", c("Latitude", "Longitude", "Elevation")
 
 ```{r}
 
-# Function to calculate distance 
-calculate_distance <- function(lat1, lon1, lat2, lon2) {
-  coords1 <- c(lon1, lat1)
-  coords2 <- c(lon2, lat2)
-  distance <- distVincentySphere(coords1, coords2)
-  return(distance)
-}
+# Sample data frame with latitude and longitude for multiple origins and destinations
+df <- CT_combined %>%
+  mutate(
+  origin_lon = longitude_from,
+  origin_lat = latitude_from,
+  dest_lon = longitude_to,
+  dest_lat = latitude_to,
+  speed_kph = c(40))  # Speed in kilometers per hour - we adopted weiss et al speeds and since most roads in makueni are uncategorised we dopted 40km/hr
 
-calculate_time <- function(distance, speed) {
-  time <- distance / speed
-  return(time)
-}
-
-# Function to calculate time based on distance and speed
-origins <- data.frame(lat = c(contact_tracing$latitude_from), 
-                    lon = c(contact_tracing$longitude_from))
-
-# Makueni County Referral Hospital (destination) coordinates
-destination <- c(-1.78363, 37.62843)
-
-#assume driving with a constant speed of 50
-speed <- 50
-
-# Create an empty data frame to store the results
-results <- data.frame(
-  Distance_meters = numeric(0),
-  Distance_kilometers = numeric(0),
-  Time_seconds = numeric(0),
-  Time_minutes = numeric(0)
-)
-
-# Calculate time and distance for each starting point
-for (i in 1:nrow(contact_tracing)) {
-  lat1 <- contact_tracing$latitude_from[i]
-  lon1 <- contact_tracing$longitude_from[i]
-
-  # Calculate distance in meters
-  distance <- calculate_distance(lat1, lon1, contact_tracing$latitude_to[1], contact_tracing$longitude_to[2])
-  cat("Distance from starting point", i, "to destination:", distance, "meters\n")
-
-  # Convert distance to kilometers
-  distance_km <- distance / 1000
-  cat("Distance from starting point", i, "to destination:", distance_km, "kilometers\n")
-
-  # Calculate time in hours
-  time_seconds <- calculate_time(distance, speed)
-  cat("Time to travel from starting point", i, "to destination:", time_hours, "hours\n")
-
-  # Convert time to minutes
-  time_minutes <- time_seconds / 60
-  cat("Time to travel from starting point", i, "to destination:", time_minutes, "minutes\n\n")
+# Function to calculate distance and time
+calculate_distance_time <- function(origin_lon, origin_lat, dest_lon, dest_lat, speed_kph) {
+  distance <- distVincentySphere(c(origin_lon, origin_lat), c(dest_lon, dest_lat))*0.001 #convert metres to km
+  time_hours <- distance / (speed_kph)  
   
-  # Append results to the data frame
-  results <- rbind(results, data.frame(
-    Distance_meters = distance,
-    Distance_kilometers = distance_km,
-    Time_seconds = time_seconds,
-    Time_minutes = time_minutes
-  ))
+  return(c(distance = distance, time_hours = time_hours))
 }
 
-print(results)
+# Create a matrix to store results
+results_matrix <- matrix(NA, nrow = nrow(df), ncol = 2)
+
+# Loop through each row to calculate distance and time
+for (i in 1:nrow(df)) {
+  results_matrix[i, ] <- calculate_distance_time(df$origin_lon[i], df$origin_lat[i], df$dest_lon[i], df$dest_lat[i], df$speed_kph[i])
+}
+
+# Combine the results with the original data frame
+result_df <- cbind(df, results_matrix)
+
+# Rename columns for clarity
+colnames(result_df) <- c("subcounty", "ward", "latitude_from", "longitude_from", "elevation", "place_from", "ID", "place_to", "latitude_to", "longitude_to","origin_lon", "origin_lat", "dest_lon", "dest_lat", "speed_kph", "distance", "time_hours")
+
+# Print the result
+print(result_df)
+
+results <- result_df %>%
+  select(- c( latitude_from,longitude_from, elevation,longitude_to, latitude_to)) %>%
+  mutate("time(minutes)" = time_hours*60) %>%
+  mutate("time(mins)_category" = ifelse(`time(minutes)` <10, "<10",
+                                 ifelse(`time(minutes)` >10 & `time(minutes)` <20, "10 - 20",
+                                 ifelse(`time(minutes)` >20 & `time(minutes)` <30, "20 - 30",
+                                 ifelse(`time(minutes)` >30 & `time(minutes)` <40, "30 - 40",
+                                 ifelse(`time(minutes)` >40 & `time(minutes)` <50, "40 - 50",
+                                 ifelse(`time(minutes)` >50 & `time(minutes)` <60, "50 - 60",
+                                        ">60"))))))) %>%
+  mutate(`time(mins)_category` = as.factor(fct_relevel(`time(mins)_category`, c("<10", "10 - 20", "20 - 30", "30 - 40", "40 - 50", "50 - 60", ">60")))) 
+
+props <- results %>%
+  group_by(`time(mins)_category`) %>%
+  tally()%>%
+  mutate(proportion = round(prop.table(n), digits=3))
+
+
+time_graph <- ggplot(props, aes(x = `time(mins)_category`, y = proportion, label = scales::percent(proportion)))+
+  geom_col(fill = "#0F2080")+
+  theme_bw()+
+  labs(x = "time (minutes) category", y = "% proportion")+
+  geom_text(position = position_dodge(width = .9),
+              vjust = -0.8,
+              size = 3) 
+  
+time_graph
+
+ggsave("time_graph.png",plot = time_graph,
+       path = "/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/Makueni/maps",
+       width = 23.5, height = 16, units = "cm", dpi = 600)
 
 ```
+

@@ -533,7 +533,8 @@ barchart_plot <- ggplot(bar_adm0, aes(x = reorder(travel_minutes,-all_facilities
             hjust= 0,fontface = "bold") +
   scale_colour_manual(values=c("#000000", "#de77ae")) +
   theme_bw() +
-  labs(title="Travel minutes to nearest facility given population",
+  labs(title="Travel minutes to nearest 
+       facility given population",
     x = "", y = "") +
   theme_classic() +
   theme(plot.title = element_text(size=11, colour="#000000", hjust = 0, vjust = 0,face="bold"),
@@ -787,7 +788,8 @@ barchart_plot <- ggplot(bar_adm0, aes(x = reorder(travel_minutes,-pep_facilities
             hjust= 0, fontface = "bold") +
   scale_colour_manual(values=c("#000000", "#de77ae")) +
   theme_bw() +
-  labs(title="Travel minutes to nearest facility given population",
+  labs(title="Travel minutes to nearest 
+ facility given population",
     x = "", y = "") +
   theme_classic() +
   theme(plot.title = element_text(size=11, colour="#000000", hjust = 0, vjust = 0,face="bold"),
@@ -835,7 +837,7 @@ figure<-ggarrange(combined_plots1, combined_plots2,
 
 figure
 
-ggsave("combined_driving.png",figure, width = 23, height = 10, units = "in", bg="white")
+ggsave("combined_driving.png",figure, width = 20, height = 12, units = "in", bg="white")
 ```
 
 
@@ -1041,7 +1043,8 @@ barchart_plot <- ggplot(bar_adm0, aes(x = reorder(travel_minutes,-all_facilities
             hjust= 0,fontface = "bold") +
   scale_colour_manual(values=c("#000000", "#de77ae")) +
   theme_bw() +
-  labs(title="Travel minutes to nearest facility given population",
+  labs(title="Travel minutes to nearest 
+facility given population",
     x = "", y = "") +
   theme_classic() +
   theme(plot.title = element_text(size=11, colour="#000000", hjust = 0, vjust = 0,face="bold"),
@@ -1293,10 +1296,11 @@ barchart_plot <- ggplot(bar_adm0, aes(x = reorder(travel_minutes,-pep_facilities
             hjust= 0, fontface = "bold") +
   scale_colour_manual(values=c("#000000", "#de77ae")) +
   theme_bw() +
-  labs(title="Travel minutes to nearest facility given population",
+  labs(title="Travel minutes to nearest 
+  facility given population",
     x = "", y = "") +
   theme_classic() +
-  theme(plot.title = element_text(size=11, colour="#000000", hjust = 0, vjust = 0),
+  theme(plot.title = element_text(size=11, colour="#000000", hjust = 0, vjust = 0,face="bold"),
     axis.text.y = element_text(size=11, colour="#000000"),
     panel.grid.minor = element_blank(),
     panel.background = element_blank(),
@@ -1341,7 +1345,7 @@ figure <-ggarrange(combined_plots3, combined_plots4,
 
 figure
 
-ggsave("combined_walking.png",figure, width = 23, height = 10, units = "in", bg = "white")
+ggsave("combined_walking.png",figure, width = 20, height = 12, units = "in", bg = "white")
 
 ```
 
@@ -1607,7 +1611,7 @@ df <- CT_combined %>%
   origin_lat = latitude_from,
   dest_lon = longitude_to,
   dest_lat = latitude_to,
-  speed_kph = c(40))  # Speed in kilometers per hour - we adopted weiss et al speeds and since most roads in makueni are uncategorised we dopted 40km/hr
+  speed_kph = c(40))  # Speed in kilometers per hour - we adopted Weiss et al speeds and since most roads in Makueni are uncategorised we adopted 40km/hr
 
 # Function to calculate distance and time
 calculate_distance_time <- function(origin_lon, origin_lat, dest_lon, dest_lat, speed_kph) {

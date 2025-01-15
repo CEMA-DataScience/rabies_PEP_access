@@ -20,7 +20,7 @@ pacman::p_load(
   raster,
   osmextract,
   tidyverse,
-  gdalUtils,
+  gdalUtilities,
   readxl,
   gdistance,
   iterators,
@@ -65,10 +65,10 @@ adm1 <- st_read(here("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets
 
 pop <- raster("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/raw/data/processed/worldpop/constrained/makueni_constrained_pop.tif")
 
-mkn.shp <- malariaAtlas::getShp(ISO = "KEN", admin_level = "admin1")
+mkn.shp <- malariaAtlas::getShp(ISO = "KEN", admin_level = "admin1", version = "202403")
 
-analysis.shp <- mkn.shp[mkn.shp@data$name_1=="Makueni",]
-analysis.shp1 <- mkn.shp[mkn.shp@data$name_1=="Makueni",]
+analysis.shp <- mkn.shp[mkn.shp$name_1=="Makueni",]
+analysis.shp1 <- mkn.shp[mkn.shp$name_1=="Makueni",]
 
 plot(analysis.shp, main="Shape for Clipping")
 plot(analysis.shp1, main = "Shape for Clipping")
@@ -86,11 +86,16 @@ own_friction <- malariaAtlas::getRaster(
 malariaAtlas::autoplot_MAPraster(friction)
 malariaAtlas::autoplot_MAPraster(own_friction)
 
+# Assuming `friction` is already a SpatRaster
+# Convert SpatRaster to RasterLayer
+friction_raster <- raster(friction)
+friction_raster1 <- raster(own_friction)
+
 ## Convert friction surface to a transition matrix
-T1 <- gdistance::transition(friction, function(x) 1/mean(x), 8) 
+T1 <- gdistance::transition(friction_raster, function(x) 1/mean(x), 8)
 T.GC <- gdistance::geoCorrection(T1) 
 
-T2 <- gdistance::transition(own_friction, function(x) 1/mean(x), 8) 
+T2 <- gdistance::transition(friction_raster1, function(x) 1/mean(x), 8) 
 T.GC1 <- gdistance::geoCorrection(T2) 
 
 makueni_shp <- st_read("/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/Makueni/processed data/shapefile/makueni_county.shp")
@@ -122,11 +127,22 @@ points <- as.matrix(all_facilities@coords)
 all_facilities_access_raster <- gdistance::accCost(T.GC, points)
 all_facilities_access_raster1 <- gdistance::accCost(T.GC1, points)
 
-p <- malariaAtlas::autoplot_MAPraster(all_facilities_access_raster, 
-                        shp_df=analysis.shp, printed=F)
+# Convert RasterLayer to SpatRaster
+all_facilities_access_raster <- rast(all_facilities_access_raster)
+all_facilities_access_raster1 <- rast(all_facilities_access_raster1)
 
-p1 <- malariaAtlas::autoplot_MAPraster(all_facilities_access_raster1, 
-                        shp_df=analysis.shp, printed=F)
+
+# Convert SpatialPolygonsDataFrame to sf
+analysis.shp <- st_as_sf(analysis.shp)
+
+p <- malariaAtlas::autoplot_MAPraster(
+  all_facilities_access_raster, 
+  shp_df=analysis.shp, 
+  printed=F)
+
+p1 <- malariaAtlas::autoplot_MAPraster(
+  all_facilities_access_raster1, 
+  shp_df=analysis.shp, printed=F)
 
 full_plot <- p[[1]] + 
   geom_point(data=data.frame(all_facilities@coords), 
@@ -1341,11 +1357,19 @@ ggsave(plot = combined_plots4, file = combined,
        width = 23.5, height = 16, units = "cm", dpi = 600)
 
 figure <-ggarrange(combined_plots3, combined_plots4,
-    labels = c("A", "B"), nrow  = 1, font.label=list(color="black",size=25,  align = "hv"))
+    labels = c("C", "D"), nrow  = 1, font.label=list(color="black",size=25,  align = "hv"))
 
 figure
 
+all_figs <- ggarrange(combined_plots3, combined_plots4,
+                      combined_plots1, combined_plots2,
+                      labels = c("A", "B", "C", "D"), nrow = 2,
+                      ncol = 2,
+                      font.label=list(color="black",size=25,  align = "hv"))
+
 ggsave("combined_walking.png",figure, width = 20, height = 12, units = "in", bg = "white")
+
+ggsave("combined_figure.png",all_figs, width = 20, height = 12, units = "in", bg = "white")
 
 ```
 

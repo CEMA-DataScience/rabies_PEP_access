@@ -117,6 +117,7 @@ names(all_facilities) <- c("X_COORD", "Y_COORD", "name", "owner_type_name")
 coordinates(all_facilities) <- ~ X_COORD + Y_COORD 
 
 crs(all_facilities) <- crs(analysis.shp)
+analysis.shp <- as(analysis.shp, "Spatial")
 
 overlap <- over(all_facilities, analysis.shp)
 
@@ -189,6 +190,7 @@ names(pep_facilities) <- c("X_COORD", "Y_COORD", "name", "owner_type_name")
 coordinates(pep_facilities) <- ~ X_COORD + Y_COORD 
 
 crs(pep_facilities) <- crs(analysis.shp)
+analysis.shp <- as(analysis.shp, "Spatial")
 
 overlap <- over(pep_facilities, analysis.shp)
 
@@ -1622,9 +1624,12 @@ CT_combined <- rbind(ct_2017_18_coords, contact_tracing) %>%
   mutate(latitude_from = as.numeric(latitude_from)) %>%
   mutate(longitude_from = as.numeric(longitude_from))
 
+pep_fac_CT_combined <- CT_combined |>
+  filter(place_to %in% c("Kibwezi Sub County Hospital", "Kilungu Sub County Hospital", "Kisau Sub County Hospital", "Makindu Sub County Hospital", "Makueni County Referral Hospital", "Matiliku Sub County Hospital", "Mbooni Sub County Hospital", "Mtito Andei Sub County Hospital", "Mukuyuni Sub County Hospital", "Sultan Hamud Sub County Hospital", "Kambu Sub County Hospital", "Tawa Sub County Hospial"))
+
 ```
 
-# buiding the main function
+# buiding the main function for all facilities
 
 ```{r}
 
@@ -1663,7 +1668,7 @@ colnames(result_df) <- c("subcounty", "ward", "latitude_from", "longitude_from",
 print(result_df)
 
 results <- result_df %>%
-  select(- c( latitude_from,longitude_from, elevation,longitude_to, latitude_to)) %>%
+  dplyr::select(- c( latitude_from,longitude_from, elevation,longitude_to, latitude_to)) %>%
   mutate("time(minutes)" = time_hours*60) %>%
   mutate("time(mins)_category" = ifelse(`time(minutes)` <10, "<10",
                                  ifelse(`time(minutes)` >10 & `time(minutes)` <20, "10 - 20",
@@ -1696,3 +1701,88 @@ ggsave("time_graph.png",plot = time_graph,
 
 ```
 
+
+
+# buiding the main function for pep facilities
+
+```{r}
+
+# Sample data frame with latitude and longitude for multiple origins and destinations
+df_pep <- pep_fac_CT_combined %>%
+  mutate(
+  origin_lon = longitude_from,
+  origin_lat = latitude_from,
+  dest_lon = longitude_to,
+  dest_lat = latitude_to,
+  speed_kph = c(40))  # Speed in kilometers per hour - we adopted Weiss et al speeds and since most roads in Makueni are uncategorised we adopted 40km/hr
+
+# Function to calculate distance and time
+calculate_distance_time <- function(origin_lon, origin_lat, dest_lon, dest_lat, speed_kph) {
+  distance <- distVincentySphere(c(origin_lon, origin_lat), c(dest_lon, dest_lat))*0.001 #convert metres to km
+  time_hours <- distance / (speed_kph)  
+  
+  return(c(distance = distance, time_hours = time_hours))
+}
+
+# Create a matrix to store results
+results_matrix <- matrix(NA, nrow = nrow(df_pep), ncol = 2)
+
+# Loop through each row to calculate distance and time
+for (i in 1:nrow(df_pep)) {
+  results_matrix[i, ] <- calculate_distance_time(df_pep$origin_lon[i], df_pep$origin_lat[i], df_pep$dest_lon[i], df_pep$dest_lat[i], df_pep$speed_kph[i])
+}
+
+# Combine the results with the original data frame
+result_df_pep <- cbind(df_pep, results_matrix)
+
+# Rename columns for clarity
+colnames(result_df_pep) <- c("subcounty", "ward", "latitude_from", "longitude_from", "elevation", "place_from", "ID", "place_to", "latitude_to", "longitude_to","origin_lon", "origin_lat", "dest_lon", "dest_lat", "speed_kph", "distance", "time_hours")
+
+# Print the result
+print(result_df_pep)
+
+results <- result_df_pep %>%
+  dplyr::select(- c( latitude_from,longitude_from, elevation,longitude_to, latitude_to)) %>%
+  mutate("time(minutes)" = time_hours*60) %>%
+  mutate("time(mins)_category" = ifelse(`time(minutes)` <10, "<10",
+                                 ifelse(`time(minutes)` >10 & `time(minutes)` <20, "10 - 20",
+                                 ifelse(`time(minutes)` >20 & `time(minutes)` <30, "20 - 30",
+                                 ifelse(`time(minutes)` >30 & `time(minutes)` <40, "30 - 40",
+                                 ifelse(`time(minutes)` >40 & `time(minutes)` <50, "40 - 50",
+                                 ifelse(`time(minutes)` >50 & `time(minutes)` <60, "50 - 60",
+                                        ">60"))))))) %>%
+  mutate(`time(mins)_category` = as.factor(fct_relevel(`time(mins)_category`, c("<10", "10 - 20", "20 - 30", "30 - 40", "40 - 50", "50 - 60", ">60")))) 
+
+props <- results %>%
+  group_by(`time(mins)_category`) %>%
+  tally()%>%
+  mutate(proportion = round(prop.table(n), digits=3))
+
+library(viridis)
+library(viridisLite)
+
+time_graph_pep <- ggplot(props, aes(x = `time(mins)_category`, y = proportion, label = scales::percent(proportion)))+
+  geom_col(fill = "#611dc0")+ 
+  theme_bw()+
+  labs(x = "time (minutes) category", y = "% proportion")+
+  geom_text(position = position_dodge(width = .9),
+              vjust = -0.8,
+              size = 3) 
+  
+time_graph_pep
+
+ggsave("time_graph_pep.png",plot = time_graph_pep,
+       path = "/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/Makueni/maps",
+       width = 23.5, height = 16, units = "cm", dpi = 600)
+
+fig_time_travel <-ggarrange(time_graph, time_graph_pep,
+    labels = c("A", "B"), nrow  = 1, font.label=list(color="black",size=20,  align = "hv"))
+
+fig_time_travel
+
+ggsave("fig_time_travel.png",plot = fig_time_travel,
+       path = "/Users/mumbuamutunga/Library/CloudStorage/Dropbox/Datasets/Makueni/maps",
+       width = 23.5, height = 16, units = "cm", dpi = 600)
+
+
+```
